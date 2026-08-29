@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/Dialog";
 import { cn } from "@/lib/cn";
 import { addImportedSong, type ImportedSong } from "../data/songStore";
+import { fileToBase64 } from "../data/tabFile";
 
 const TAB_EXTENSIONS = [
   ".gp",
@@ -160,6 +161,7 @@ export function ImportSongDialog() {
   const [audioFiles, setAudioFiles] = useState<File[]>([]);
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const ready = tabFiles.length > 0 && audioFiles.length > 0;
 
@@ -168,35 +170,50 @@ export function ImportSongDialog() {
     setAudioFiles([]);
     setSearch("");
     setBusy(false);
+    setError(null);
   }
 
   async function handleFinish() {
     if (!ready || busy) return;
     setBusy(true);
+    setError(null);
 
-    const tabFile = tabFiles[0];
-    const durationSec = await readAudioDuration(audioFiles[0]);
-    const title = titleFromFileName(tabFile.name) || "Imported song";
-    const id = `${slugify(title)}-${Date.now().toString(36)}`;
+    try {
+      const tabFile = tabFiles[0];
+      const [durationSec, tabData] = await Promise.all([
+        readAudioDuration(audioFiles[0]),
+        fileToBase64(tabFile),
+      ]);
+      const title = titleFromFileName(tabFile.name) || "Imported song";
+      const id = `${slugify(title)}-${Date.now().toString(36)}`;
 
-    const song: ImportedSong = {
-      id,
-      title,
-      artist: "Imported",
-      durationSec,
-      bpm: 120,
-      difficulty: "intermediate",
-      hasAudio: true,
-      hasTab: true,
-      createdAt: Date.now(),
-      tabFileName: tabFile.name,
-      audioFileNames: audioFiles.map((f) => f.name),
-    };
+      const song: ImportedSong = {
+        id,
+        title,
+        artist: "Imported",
+        durationSec,
+        bpm: 120,
+        difficulty: "intermediate",
+        hasAudio: true,
+        hasTab: true,
+        tabData,
+        createdAt: Date.now(),
+        tabFileName: tabFile.name,
+        audioFileNames: audioFiles.map((f) => f.name),
+      };
 
-    addImportedSong(song);
-    setOpen(false);
-    reset();
-    router.push(`/player/${id}`);
+      addImportedSong(song);
+      setOpen(false);
+      reset();
+      router.push(`/player/${id}`);
+    } catch (err) {
+      setBusy(false);
+      setError(
+        err instanceof Error && err.name === "QuotaExceededError"
+          ? "That tab file is too large to store locally."
+          : "Could not import that song. Check the file and try again.",
+      );
+    }
   }
 
   function handleSearch() {
@@ -268,6 +285,12 @@ export function ImportSongDialog() {
             />
           </div>
         </div>
+
+        {error && (
+          <p className="text-sm text-red-400" role="alert">
+            {error}
+          </p>
+        )}
 
         <DialogFooter>
           <DialogClose asChild>

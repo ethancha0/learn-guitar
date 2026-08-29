@@ -7,6 +7,7 @@ import { ArrowLeft } from "lucide-react";
 import { useSongById } from "@/features/library/data/songStore";
 import { ScoreView } from "@/features/player/components/ScoreView";
 import { TransportBar } from "@/features/player/components/TransportBar";
+import { AlphaTabPlayer } from "@/features/player/components/AlphaTabPlayer";
 import { FeedbackPanel } from "@/features/player/components/FeedbackPanel";
 import { mockGrade } from "@/features/player/data/mockGrade";
 
@@ -52,8 +53,14 @@ export default function PlayerPage({
         </div>
       </div>
 
-      <ScoreView />
-      <TransportBar durationSec={song.durationSec} />
+      {song.tabData ? (
+        <AlphaTabPlayer tabData={song.tabData} />
+      ) : (
+        <>
+          <ScoreView />
+          <TransportBar durationSec={song.durationSec} />
+        </>
+      )}
       <FeedbackPanel grade={mockGrade} />
     </div>
   );

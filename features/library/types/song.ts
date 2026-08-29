@@ -10,4 +10,9 @@ export interface Song {
   hasAudio: boolean;
   /** Whether a Guitar Pro / tab file has been imported yet (mock flag). */
   hasTab: boolean;
+  /**
+   * Base64-encoded bytes of the imported Guitar Pro / PowerTab file, used to
+   * feed alphaTab in the player. Present on user-imported songs only.
+   */
+  tabData?: string;
 }
