@@ -9,3 +9,37 @@
 body {
   @apply bg-surface text-zinc-100 antialiased;
 }
+
+/*
+ * alphaTab playback cursors. alphaTab renders the cursor DOM but ships no
+ * colours, so the moving "slider" is invisible until styled here. Scoped to the
+ * score container in AlphaTabPlayer.
+ */
+.alphatab-host .at-cursors {
+  pointer-events: none;
+}
+
+/* Wash over the bar currently being played. */
+.alphatab-host .at-cursor-bar {
+  background: rgba(34, 197, 94, 0.1);
+}
+
+/* The vertical playhead that sweeps toward the next note. alphaTab sizes and
+   animates it via inline transforms, so only paint it here — no width/transition
+   overrides or the animation breaks. */
+.alphatab-host .at-cursor-beat {
+  background: #16a34a;
+  box-shadow:
+    0 0 0 1px rgba(22, 163, 74, 0.9),
+    0 0 12px 2px rgba(22, 163, 74, 0.65);
+}
+
+/* Notes of the beat that is sounding right now. */
+.alphatab-host .at-highlight * {
+  fill: #16a34a !important;
+  stroke: #16a34a !important;
+}
+
+.alphatab-host .at-selection div {
+  background: rgba(34, 197, 94, 0.12);
+}

@@ -104,7 +104,12 @@ export function AlphaTabPlayer({ tabData }: AlphaTabPlayerProps) {
           },
           player: {
             enablePlayer: true,
+            // Playback cursors: the bar wash, the animated beat "slider" that
+            // glides toward the next note, and highlighting of the sounding
+            // notes. Styled in globals.css under `.alphatab-host`.
             enableCursor: true,
+            enableAnimatedBeatCursor: true,
+            enableElementHighlighting: true,
             soundFont: `${ALPHATAB_ASSETS}/soundfont/sonivox.sf3`,
             scrollElement: viewportRef.current ?? undefined,
             nativeBrowserSmoothScroll: true,
