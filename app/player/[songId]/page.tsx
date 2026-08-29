@@ -54,7 +54,7 @@ export default function PlayerPage({
       </div>
 
       {song.tabData ? (
-        <AlphaTabPlayer tabData={song.tabData} />
+        <AlphaTabPlayer songId={songId} tabData={song.tabData} />
       ) : (
         <>
           <ScoreView />

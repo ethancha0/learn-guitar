@@ -85,3 +85,30 @@ export function useSongById(id: string): Song | undefined {
   const imported = useImportedSongs();
   return imported.find((s) => s.id === id) ?? getSeedSongById(id);
 }
+
+// --- Preferred instrument (per song) -----------------------------------------
+
+const PREFERRED_TRACK_KEY = "learn-bass.preferred-track";
+
+function readPreferredTrackMap(): Record<string, number> {
+  try {
+    const raw = window.localStorage.getItem(PREFERRED_TRACK_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The track index the user last viewed for this song, if any. */
+export function getPreferredTrackIndex(songId: string): number | undefined {
+  if (typeof window === "undefined") return undefined;
+  return readPreferredTrackMap()[songId];
+}
+
+export function setPreferredTrackIndex(songId: string, index: number): void {
+  if (typeof window === "undefined") return;
+  const map = readPreferredTrackMap();
+  map[songId] = index;
+  window.localStorage.setItem(PREFERRED_TRACK_KEY, JSON.stringify(map));
+}

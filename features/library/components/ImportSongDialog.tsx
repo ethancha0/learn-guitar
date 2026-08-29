@@ -17,6 +17,7 @@ import {
 import { cn } from "@/lib/cn";
 import { addImportedSong, type ImportedSong } from "../data/songStore";
 import { fileToBase64 } from "../data/tabFile";
+import { putBackingAudio } from "@/features/player/data/audioStore";
 
 const TAB_EXTENSIONS = [
   ".gp",
@@ -57,14 +58,18 @@ function readAudioDuration(file: File): Promise<number> {
     const url = URL.createObjectURL(file);
     const audio = new Audio();
     audio.preload = "metadata";
-    audio.onloadedmetadata = () => {
+    let settled = false;
+    const done = (value: number) => {
+      if (settled) return;
+      settled = true;
       URL.revokeObjectURL(url);
-      resolve(Number.isFinite(audio.duration) ? Math.round(audio.duration) : 0);
+      resolve(value);
     };
-    audio.onerror = () => {
-      URL.revokeObjectURL(url);
-      resolve(0);
-    };
+    audio.onloadedmetadata = () =>
+      done(Number.isFinite(audio.duration) ? Math.round(audio.duration) : 0);
+    audio.onerror = () => done(0);
+    // Some codecs never fire metadata events in every browser; don't hang import.
+    setTimeout(() => done(0), 5000);
     audio.src = url;
   });
 }
@@ -186,6 +191,9 @@ export function ImportSongDialog() {
       ]);
       const title = titleFromFileName(tabFile.name) || "Imported song";
       const id = `${slugify(title)}-${Date.now().toString(36)}`;
+
+      // Audio can be several MB, so it goes to IndexedDB rather than localStorage.
+      await putBackingAudio(id, audioFiles[0]);
 
       const song: ImportedSong = {
         id,

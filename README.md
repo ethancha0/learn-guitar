@@ -24,8 +24,17 @@ npm run build   # production build + type check
 - `features/player/` — player screen incl. `AlphaTabPlayer` (components / data / types)
 - `lib/` — tiny shared helpers
 
-Imported songs (tab bytes as base64 + audio file names) are persisted to
-`localStorage`; see `features/library/data/songStore.ts`.
+Imported songs (tab bytes as base64 + audio file names + chosen instrument) are
+persisted to `localStorage` (`features/library/data/songStore.ts`); the backing
+mp3 is too large for `localStorage` so it goes to IndexedDB
+(`features/player/data/audioStore.ts`).
+
+The player renders one score track at a time — pick the instrument from the
+transport dropdown or the mixer's eye toggles; the choice is remembered per song.
+The mixer (`features/player/components/Mixer.tsx`) drives alphaTab's master /
+metronome / per-track volume, mute and solo, plus a plain `<audio>` element for
+the backing mp3 that is kept roughly in sync with alphaTab's playhead (no
+time-stretching, so speed changes pitch-shift the backing track).
 
 ## alphaTab assets
 
