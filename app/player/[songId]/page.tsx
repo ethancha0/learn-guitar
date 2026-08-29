@@ -1,21 +1,36 @@
-import { notFound } from "next/navigation";
+"use client";
+
+import { use, useEffect, useState } from "react";
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
-import { getSongById } from "@/features/library/data/songs";
+import { useSongById } from "@/features/library/data/songStore";
 import { ScoreView } from "@/features/player/components/ScoreView";
 import { TransportBar } from "@/features/player/components/TransportBar";
 import { FeedbackPanel } from "@/features/player/components/FeedbackPanel";
 import { mockGrade } from "@/features/player/data/mockGrade";
 
-export default async function PlayerPage({
+export default function PlayerPage({
   params,
 }: {
   params: Promise<{ songId: string }>;
 }) {
-  const { songId } = await params;
-  const song = getSongById(songId);
+  const { songId } = use(params);
+  const song = useSongById(songId);
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => setHydrated(true), []);
 
   if (!song) {
+    // Imported songs live in localStorage, so wait for hydration before
+    // deciding a song truly doesn't exist.
+    if (!hydrated) {
+      return (
+        <div className="flex min-h-[calc(100dvh-3rem)] items-center justify-center text-sm text-zinc-500">
+          Loading song…
+        </div>
+      );
+    }
     notFound();
   }
 

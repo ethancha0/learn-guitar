@@ -1,7 +1,11 @@
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
+
 /**
- * Minimal className joiner. Kept dependency-free on purpose; swap for `clsx` +
- * `tailwind-merge` only if conditional class logic actually gets complex.
+ * Class name joiner used across the app and by the shadcn/ui primitives in
+ * `components/ui`. `clsx` handles conditional logic; `tailwind-merge` dedupes
+ * conflicting Tailwind utilities (e.g. `px-2 px-4`).
  */
-export function cn(...parts: Array<string | false | null | undefined>): string {
-  return parts.filter(Boolean).join(" ");
+export function cn(...inputs: ClassValue[]): string {
+  return twMerge(clsx(inputs));
 }

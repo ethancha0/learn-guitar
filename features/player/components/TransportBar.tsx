@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Play, Pause, SkipBack, Repeat, Bell } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/Button";
+import { Select } from "@/components/ui/Select";
 import { formatDuration } from "@/features/library/components/formatDuration";
 import { defaultPlaybackState } from "../types/playback";
 
@@ -18,6 +19,7 @@ export function TransportBar({ durationSec }: { durationSec: number }) {
     <div className="flex items-center gap-4 rounded-lg border border-white/5 bg-surface-raised px-4 py-3">
       <Button
         variant="ghost"
+        size="icon"
         aria-label="Restart"
         onClick={() => setState((s) => ({ ...s, positionSec: 0 }))}
       >
@@ -25,6 +27,7 @@ export function TransportBar({ durationSec }: { durationSec: number }) {
       </Button>
 
       <Button
+        size="icon"
         aria-label={state.isPlaying ? "Pause" : "Play"}
         onClick={() => setState((s) => ({ ...s, isPlaying: !s.isPlaying }))}
       >
@@ -44,21 +47,21 @@ export function TransportBar({ durationSec }: { durationSec: number }) {
 
       <label className="flex items-center gap-1 text-xs text-zinc-400">
         Speed
-        <select
+        <Select
           value={state.speed}
           onChange={(e) => setState((s) => ({ ...s, speed: Number(e.target.value) }))}
-          className="rounded bg-surface-overlay px-1.5 py-1 text-zinc-200"
         >
           {[0.5, 0.75, 1, 1.25, 1.5].map((v) => (
             <option key={v} value={v}>
               {v}x
             </option>
           ))}
-        </select>
+        </Select>
       </label>
 
       <Button
         variant="ghost"
+        size="icon"
         aria-pressed={state.loop !== null}
         aria-label="Toggle loop"
         className={cn(state.loop !== null && "text-accent")}
@@ -74,6 +77,7 @@ export function TransportBar({ durationSec }: { durationSec: number }) {
 
       <Button
         variant="ghost"
+        size="icon"
         aria-pressed={state.metronome}
         aria-label="Toggle metronome"
         className={cn(state.metronome && "text-accent")}

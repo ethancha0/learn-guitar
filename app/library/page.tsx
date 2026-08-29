@@ -1,8 +1,6 @@
-import { Upload } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { Button } from "@/components/ui/Button";
-import { SongGrid } from "@/features/library/components/SongGrid";
-import { songs } from "@/features/library/data/songs";
+import { ImportSongDialog } from "@/features/library/components/ImportSongDialog";
+import { LibrarySongGrid } from "@/features/library/components/LibrarySongGrid";
 
 export default function LibraryPage() {
   return (
@@ -10,14 +8,9 @@ export default function LibraryPage() {
       <PageHeader
         title="Library"
         subtitle="Your imported songs. Pick one to open the player."
-        actions={
-          <Button disabled>
-            <Upload className="h-4 w-4" />
-            Import song
-          </Button>
-        }
+        actions={<ImportSongDialog />}
       />
-      <SongGrid songs={songs} />
+      <LibrarySongGrid />
     </div>
   );
 }

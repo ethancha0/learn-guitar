@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Clock, Gauge, Music4, AudioLines } from "lucide-react";
+import { CardTitle, CardDescription } from "@/components/ui/Card";
 import type { Song } from "../types/song";
 import { formatDuration } from "./formatDuration";
 
@@ -16,8 +17,8 @@ export function SongCard({ song }: { song: Song }) {
       className="group flex flex-col gap-3 rounded-lg border border-white/5 bg-surface-raised p-4 transition-colors hover:border-accent/40 hover:bg-surface-overlay"
     >
       <div>
-        <h3 className="font-medium text-zinc-100 group-hover:text-accent">{song.title}</h3>
-        <p className="text-sm text-zinc-400">{song.artist}</p>
+        <CardTitle className="group-hover:text-accent">{song.title}</CardTitle>
+        <CardDescription>{song.artist}</CardDescription>
       </div>
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-400">
