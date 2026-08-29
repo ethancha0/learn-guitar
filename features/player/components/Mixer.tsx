@@ -1,16 +1,9 @@
 "use client";
 
-import {
-  Volume2,
-  VolumeX,
-  Eye,
-  EyeOff,
-  Music2,
-  AudioWaveform,
-  X,
-} from "lucide-react";
+import { Volume2, VolumeX, Eye, EyeOff, Music2, AudioWaveform, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
+import { AudioOffsetControl } from "./AudioOffsetControl";
 
 export interface MixerTrack {
   index: number;
@@ -22,10 +15,13 @@ export interface MixerTrack {
 }
 
 interface MixerProps {
-  master: number;
-  onMaster: (v: number) => void;
-  metronome: number;
-  onMetronome: (v: number) => void;
+  /** True while the imported mp3 is the clock (synth instruments are silent). */
+  recordMode: boolean;
+  offsetMs: number;
+  onOffsetChange: (nextMs: number) => void;
+  onOffsetReset: () => void;
+  onAutoAlign: () => void;
+  autoAligning?: boolean;
   hasBacking: boolean;
   backing: number;
   backingMuted: boolean;
@@ -71,6 +67,7 @@ function ChannelRow({
   sublabel,
   volume,
   volumeMax = 1,
+  hideVolume,
   onVolume,
   muted,
   onMute,
@@ -82,9 +79,10 @@ function ChannelRow({
   icon: React.ReactNode;
   label: string;
   sublabel?: string;
-  volume: number;
+  volume?: number;
   volumeMax?: number;
-  onVolume: (v: number) => void;
+  hideVolume?: boolean;
+  onVolume?: (v: number) => void;
   muted?: boolean;
   onMute?: (m: boolean) => void;
   soloed?: boolean;
@@ -162,22 +160,25 @@ function ChannelRow({
         )}
       </div>
 
-      <VolumeSlider
-        value={volume}
-        max={volumeMax}
-        onChange={onVolume}
-        ariaLabel={`${label} volume`}
-      />
+      {!hideVolume && onVolume && (
+        <VolumeSlider
+          value={volume ?? 0}
+          max={volumeMax}
+          onChange={onVolume}
+          ariaLabel={`${label} volume`}
+        />
+      )}
     </div>
   );
 }
 
-/** Yousician/Songsterr-style channel strip for the loaded score + backing track. */
+/** Channel strip for the imported recording + score tracks. */
 export function Mixer({
-  master,
-  onMaster,
-  metronome,
-  onMetronome,
+  offsetMs,
+  onOffsetChange,
+  onOffsetReset,
+  onAutoAlign,
+  autoAligning,
   hasBacking,
   backing,
   backingMuted,
@@ -186,9 +187,6 @@ export function Mixer({
   tracks,
   shownTrackIndex,
   onShowTrack,
-  onTrackVolume,
-  onTrackMute,
-  onTrackSolo,
   onClose,
 }: MixerProps) {
   return (
@@ -206,34 +204,31 @@ export function Mixer({
       </div>
 
       <div className="flex flex-1 flex-col gap-3 overflow-y-auto">
-        <div className="flex flex-col gap-2">
-          <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
-            Master
-          </p>
-          <ChannelRow
-            icon={<AudioWaveform className="h-4 w-4" />}
-            label="Output"
-            volume={master}
-            onVolume={onMaster}
-          />
-          <ChannelRow
-            icon={<Music2 className="h-4 w-4" />}
-            label="Metronome"
-            volume={metronome}
-            onVolume={onMetronome}
-          />
-          {hasBacking && (
+        {hasBacking && (
+          <div className="flex flex-col gap-2">
+            <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+              Recording
+            </p>
             <ChannelRow
               icon={<AudioWaveform className="h-4 w-4" />}
-              label="Backing track"
+              label="Original recording"
               sublabel="mp3"
               volume={backing}
               onVolume={onBacking}
               muted={backingMuted}
               onMute={onBackingMute}
             />
-          )}
-        </div>
+            <div className="rounded-md bg-surface-overlay px-3 py-2.5">
+              <AudioOffsetControl
+                offsetMs={offsetMs}
+                onChange={onOffsetChange}
+                onReset={onOffsetReset}
+                onAutoAlign={onAutoAlign}
+                autoAligning={autoAligning}
+              />
+            </div>
+          </div>
+        )}
 
         <div className="flex flex-col gap-2">
           <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
@@ -244,17 +239,15 @@ export function Mixer({
               key={t.index}
               icon={<Music2 className="h-4 w-4" />}
               label={t.name}
-              volume={t.volume}
-              volumeMax={1.5}
-              onVolume={(v) => onTrackVolume(t.index, v)}
-              muted={t.muted}
-              onMute={(m) => onTrackMute(t.index, m)}
-              soloed={t.soloed}
-              onSolo={(s) => onTrackSolo(t.index, s)}
+              hideVolume
               shown={t.index === shownTrackIndex}
               onShow={() => onShowTrack(t.index)}
             />
           ))}
+          <p className="px-1 text-[11px] leading-snug text-zinc-500">
+            The eye picks which part is shown in the tab. Audio comes from the
+            recording, so instruments have no separate level here.
+          </p>
         </div>
       </div>
     </aside>

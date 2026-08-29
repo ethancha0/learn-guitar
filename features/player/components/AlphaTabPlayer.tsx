@@ -6,7 +6,6 @@ import {
   Pause,
   Square,
   Repeat,
-  Bell,
   Printer,
   Loader2,
   SlidersHorizontal,
@@ -18,14 +17,24 @@ import { base64ToBytes } from "@/features/library/data/tabFile";
 import {
   getPreferredTrackIndex,
   setPreferredTrackIndex,
+  getAudioSync,
+  patchAudioSync,
+  type SyncPoint,
 } from "@/features/library/data/songStore";
 import { getBackingAudio } from "@/features/player/data/audioStore";
+import { useBackingSync, setPreservesPitch } from "@/features/player/data/backingSync";
+import { estimateLeadInMs } from "@/features/player/data/autoAlign";
 import { Mixer, type MixerTrack } from "./Mixer";
+import { AudioOffsetControl } from "./AudioOffsetControl";
+import { BackingVolumeControl } from "./BackingVolumeControl";
 
 // alphaTab's worker/worklet scripts must be same-origin, so its runtime assets
-// (script, worker, worklet, music font, soundfont) are copied to
-// `public/alphatab` and served locally. See README.
+// (script, worker, worklet, music font) are copied to `public/alphatab` and
+// served locally. See README.
 const ALPHATAB_ASSETS = "/alphatab";
+
+const OFFSET_CLAMP_MS = 5000;
+const PERSIST_DEBOUNCE_MS = 400;
 
 const NOTE_NAMES = [
   "C",
@@ -51,17 +60,18 @@ function formatMs(ms: number): string {
 }
 
 interface AlphaTabPlayerProps {
-  /** Song id, used to load the backing track and remember the chosen instrument. */
+  /** Song id, used to load the backing track and remember per-song settings. */
   songId: string;
   /** Base64-encoded Guitar Pro / PowerTab file bytes. */
   tabData: string;
 }
 
 /**
- * Renders an imported multi-track tab with alphaTab: instrument picker (drives
- * which staff is shown), synth playback with an animated beat cursor, a channel
- * mixer for every score track plus the imported mp3 backing track. alphaTab
- * needs the DOM, so this is client-only and the module is imported lazily.
+ * Renders an imported multi-track tab with alphaTab in `EnabledExternalMedia`
+ * mode: the imported mp3 is the time source and alphaTab's cursor is locked to
+ * it (see `backingSync.ts`). Includes an instrument picker (drives which staff is
+ * shown), a per-song alignment offset (Auto-align + nudge), and a prominent
+ * recording-volume control. alphaTab's synthesizer is silent in this mode.
  */
 export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -71,10 +81,12 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   const apiRef = useRef<any>(null);
   // Read by the position listener so a drag doesn't fight the playhead.
   const scrubbingRef = useRef(false);
+  const offsetPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const backingPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
-  const [soundFontProgress, setSoundFontProgress] = useState(0);
   const [playerReady, setPlayerReady] = useState(false);
+  const [audioMetaReady, setAudioMetaReady] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [positionMs, setPositionMs] = useState(0);
   const [durationMs, setDurationMs] = useState(0);
@@ -88,13 +100,24 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   const [tuning, setTuning] = useState<string>("");
   const [selectedTrack, setSelectedTrack] = useState(0);
 
-  // Mixer state
+  // Recording + calibration state
   const [mixerOpen, setMixerOpen] = useState(false);
-  const [master, setMaster] = useState(1);
-  const [metronomeVol, setMetronomeVol] = useState(0);
   const [hasBacking, setHasBacking] = useState(false);
-  const [backingVol, setBackingVol] = useState(0.8);
+  const [backingVol, setBackingVol] = useState(0.85);
   const [backingMuted, setBackingMuted] = useState(false);
+  const [offsetMs, setOffsetMs] = useState(0);
+  const [extraSyncPoints, setExtraSyncPoints] = useState<SyncPoint[]>([]);
+  const [autoAligning, setAutoAligning] = useState(false);
+
+  const { onStateChanged, applyOffset } = useBackingSync({
+    songId,
+    apiRef,
+    audioRef: backingAudioRef,
+    offsetMs,
+    extraSyncPoints,
+    playerReady,
+    audioMetaReady,
+  });
 
   const renderTrack = useCallback((index: number) => {
     const api = apiRef.current;
@@ -107,7 +130,10 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     const midi: number[] = staff?.tuning ?? [];
     setTuning(
       midi.length
-        ? [...midi].reverse().map((m) => NOTE_NAMES[((m % 12) + 12) % 12]).join(" ")
+        ? [...midi]
+            .reverse()
+            .map((m) => NOTE_NAMES[((m % 12) + 12) % 12])
+            .join(" ")
         : "",
     );
   }, []);
@@ -156,19 +182,21 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
             enableLazyLoading: false,
           },
           player: {
-            enablePlayer: true,
-            // Playback cursors: the bar wash, the animated beat "slider" that
-            // glides toward the next note, and highlighting of the sounding
-            // notes. Styled in globals.css under `.alphatab-host`.
+            // The imported mp3 is the clock; alphaTab follows it and its own
+            // synthesizer stays silent. See `backingSync.ts`.
+            playerMode: alphaTab.PlayerMode.EnabledExternalMedia,
             enableCursor: true,
             enableAnimatedBeatCursor: true,
             enableElementHighlighting: true,
-            soundFont: `${ALPHATAB_ASSETS}/soundfont/sonivox.sf3`,
             scrollElement: viewportRef.current ?? undefined,
             nativeBrowserSmoothScroll: true,
           },
         });
         apiRef.current = api;
+        if (process.env.NODE_ENV !== "production") {
+          // Debug handle for manual sync inspection in the browser console.
+          (window as unknown as { __alphaTabApi?: unknown }).__alphaTabApi = api;
+        }
 
         api.error.on((err: unknown) => {
           console.error("[AlphaTabPlayer] alphaTab error", err);
@@ -177,47 +205,27 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
         api.renderFinished.on(() => {
           if (!disposed) setStatus("ready");
         });
-        api.soundFontLoad.on((e: { loaded: number; total: number }) => {
-          if (!disposed && e.total > 0) {
-            setSoundFontProgress(Math.round((e.loaded / e.total) * 100));
-          }
-        });
         api.playerReady.on(() => {
           if (!disposed) setPlayerReady(true);
         });
         api.playerStateChanged.on((e: { state: number }) => {
           if (disposed) return;
           setPlaying(e.state === 1);
-          const audio = backingAudioRef.current;
-          if (audio) {
-            if (e.state === 1) void audio.play().catch(() => {});
-            else audio.pause();
-          }
+          onStateChanged(e.state === 1);
         });
         api.playerPositionChanged.on(
-          (e: {
-            currentTime: number;
-            endTime: number;
-            isSeek: boolean;
-          }) => {
+          (e: { currentTime: number; endTime: number; isSeek: boolean }) => {
             if (disposed) return;
             setDurationMs(e.endTime);
             if (!scrubbingRef.current) setPositionMs(e.currentTime);
-
-            const audio = backingAudioRef.current;
-            if (audio && Number.isFinite(audio.duration)) {
-              const target = e.currentTime / 1000;
-              if (e.isSeek || Math.abs(audio.currentTime - target) > 0.35) {
-                audio.currentTime = target;
-              }
-            }
           },
         );
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         api.scoreLoaded.on((score: any) => {
           if (disposed) return;
-          const scoreTracks: any[] = score.tracks ?? []; // eslint-disable-line @typescript-eslint/no-explicit-any
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const scoreTracks: any[] = score.tracks ?? [];
           const names = scoreTracks.map(
             (t, i) => t.name || t.shortName || `Track ${i + 1}`,
           );
@@ -260,24 +268,49 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabData, songId]);
 
-  // Load the imported mp3 backing track for this song.
+  // Load the imported mp3 backing track + persisted per-song settings.
   useEffect(() => {
     let url: string | undefined;
     let cancelled = false;
+    let metaTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const sync = getAudioSync(songId);
+    if (sync) {
+      setOffsetMs(sync.offsetMs ?? 0);
+      setExtraSyncPoints(sync.syncPoints ?? []);
+      if (typeof sync.backingVol === "number") setBackingVol(sync.backingVol);
+      if (typeof sync.backingMuted === "boolean")
+        setBackingMuted(sync.backingMuted);
+    }
+
     getBackingAudio(songId).then((blob) => {
-      if (cancelled || !blob || !backingAudioRef.current) return;
+      if (cancelled) return;
+      if (!blob || !backingAudioRef.current) {
+        // No recording stored (e.g. a legacy import) — nothing to wait for.
+        setAudioMetaReady(true);
+        return;
+      }
       // Re-wrap so the object URL always carries a decodable MIME type.
       const typed =
         blob.type && blob.type.startsWith("audio/")
           ? blob
           : new Blob([blob], { type: "audio/mpeg" });
       url = URL.createObjectURL(typed);
-      backingAudioRef.current.src = url;
-      backingAudioRef.current.load();
+      const audio = backingAudioRef.current;
+      audio.src = url;
+      setPreservesPitch(audio);
+      audio.load();
       setHasBacking(true);
+
+      const onMeta = () => setAudioMetaReady(true);
+      audio.addEventListener("loadedmetadata", onMeta, { once: true });
+      // Some browsers stall metadata for blob mp3s; don't block controls forever.
+      metaTimer = setTimeout(() => setAudioMetaReady(true), 4000);
     });
+
     return () => {
       cancelled = true;
+      if (metaTimer) clearTimeout(metaTimer);
       if (url) URL.revokeObjectURL(url);
     };
   }, [songId]);
@@ -286,15 +319,8 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     scrubbingRef.current = scrubbing;
   }, [scrubbing]);
 
-  // Push mixer values into alphaTab once the synth is ready (and on change).
-  useEffect(() => {
-    if (apiRef.current) apiRef.current.masterVolume = master;
-  }, [master, playerReady]);
-
-  useEffect(() => {
-    if (apiRef.current) apiRef.current.metronomeVolume = metronomeVol;
-  }, [metronomeVol, playerReady]);
-
+  // Per-instrument mix (kept for a possible future synth mode; inert while the
+  // recording is the clock, but harmless).
   useEffect(() => {
     const api = apiRef.current;
     if (!api?.score) return;
@@ -307,10 +333,23 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     }
   }, [tracks, playerReady]);
 
+  // Recording level → the <audio> element, and persist (debounced).
   useEffect(() => {
     const audio = backingAudioRef.current;
     if (audio) audio.volume = backingMuted ? 0 : Math.min(1, backingVol);
-  }, [backingVol, backingMuted, hasBacking]);
+
+    if (backingPersistTimer.current) clearTimeout(backingPersistTimer.current);
+    backingPersistTimer.current = setTimeout(() => {
+      patchAudioSync(songId, { backingVol, backingMuted });
+    }, PERSIST_DEBOUNCE_MS);
+  }, [backingVol, backingMuted, hasBacking, playerReady, songId]);
+
+  useEffect(() => {
+    return () => {
+      if (offsetPersistTimer.current) clearTimeout(offsetPersistTimer.current);
+      if (backingPersistTimer.current) clearTimeout(backingPersistTimer.current);
+    };
+  }, []);
 
   function togglePlay() {
     apiRef.current?.playPause();
@@ -329,13 +368,10 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     setLooping(next);
     if (apiRef.current) apiRef.current.isLooping = next;
   }
-  function toggleMetronome() {
-    setMetronomeVol((v) => (v > 0 ? 0 : 1));
-  }
   function changeSpeed(value: number) {
     setSpeed(value);
+    // alphaTab forwards the rate to our media handler (which keeps pitch).
     if (apiRef.current) apiRef.current.playbackSpeed = value;
-    if (backingAudioRef.current) backingAudioRef.current.playbackRate = value;
   }
 
   function selectTrack(index: number) {
@@ -350,7 +386,44 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     );
   }
 
-  const controlsDisabled = !playerReady;
+  function handleOffsetChange(nextMs: number) {
+    const clamped = Math.max(
+      -OFFSET_CLAMP_MS,
+      Math.min(OFFSET_CLAMP_MS, Math.round(nextMs)),
+    );
+    setOffsetMs(clamped);
+    applyOffset();
+    if (offsetPersistTimer.current) clearTimeout(offsetPersistTimer.current);
+    offsetPersistTimer.current = setTimeout(() => {
+      patchAudioSync(songId, { offsetMs: clamped });
+    }, PERSIST_DEBOUNCE_MS);
+  }
+
+  function handleOffsetReset() {
+    handleOffsetChange(0);
+  }
+
+  async function handleAutoAlign() {
+    setAutoAligning(true);
+    try {
+      const blob = await getBackingAudio(songId);
+      if (!blob) return;
+      const leadInMs = await estimateLeadInMs(blob);
+      handleOffsetChange(leadInMs);
+    } finally {
+      setAutoAligning(false);
+    }
+  }
+
+  const controlsDisabled = !playerReady || !audioMetaReady;
+  const overlayVisible =
+    status === "error" || status !== "ready" || !audioMetaReady;
+  const overlayText =
+    status === "error"
+      ? "Could not render this tab file."
+      : status !== "ready"
+        ? "Rendering tab…"
+        : "Loading recording…";
 
   return (
     <div className="flex flex-1 flex-col gap-3">
@@ -399,7 +472,7 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
           </label>
         )}
 
-        <div className="flex flex-1 items-center gap-3 text-xs text-zinc-400">
+        <div className="flex min-w-[12rem] flex-1 items-center gap-3 text-xs text-zinc-400">
           <span className="tabular-nums">{formatMs(positionMs)}</span>
           <input
             type="range"
@@ -447,6 +520,28 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
           </Select>
         </label>
 
+        {hasBacking && (
+          <BackingVolumeControl
+            volume={backingVol}
+            muted={backingMuted}
+            onVolume={setBackingVol}
+            onMuteToggle={() => setBackingMuted((m) => !m)}
+            disabled={controlsDisabled}
+          />
+        )}
+
+        {hasBacking && (
+          <AudioOffsetControl
+            compact
+            offsetMs={offsetMs}
+            onChange={handleOffsetChange}
+            onReset={handleOffsetReset}
+            onAutoAlign={handleAutoAlign}
+            autoAligning={autoAligning}
+            disabled={controlsDisabled}
+          />
+        )}
+
         <Button
           variant="ghost"
           size="icon"
@@ -457,17 +552,6 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
           onClick={toggleLoop}
         >
           <Repeat className="h-4 w-4" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Toggle metronome"
-          aria-pressed={metronomeVol > 0}
-          disabled={controlsDisabled}
-          className={cn(metronomeVol > 0 && "text-accent")}
-          onClick={toggleMetronome}
-        >
-          <Bell className="h-4 w-4" />
         </Button>
         <Button
           variant="ghost"
@@ -494,20 +578,10 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
         ref={viewportRef}
         className="relative min-h-[360px] flex-1 overflow-auto rounded-lg border border-white/5 bg-white text-black"
       >
-        {status !== "ready" && (
+        {overlayVisible && (
           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-surface-raised text-sm text-zinc-400">
-            {status === "error" ? (
-              <p>Could not render this tab file.</p>
-            ) : (
-              <>
-                <Loader2 className="h-6 w-6 animate-spin" />
-                <p>
-                  {soundFontProgress > 0 && soundFontProgress < 100
-                    ? `Loading sounds… ${soundFontProgress}%`
-                    : "Rendering tab…"}
-                </p>
-              </>
-            )}
+            {status !== "error" && <Loader2 className="h-6 w-6 animate-spin" />}
+            <p>{overlayText}</p>
           </div>
         )}
         <div ref={hostRef} className="alphatab-host p-4" />
@@ -515,10 +589,12 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
 
       {mixerOpen && (
         <Mixer
-          master={master}
-          onMaster={setMaster}
-          metronome={metronomeVol}
-          onMetronome={setMetronomeVol}
+          recordMode
+          offsetMs={offsetMs}
+          onOffsetChange={handleOffsetChange}
+          onOffsetReset={handleOffsetReset}
+          onAutoAlign={handleAutoAlign}
+          autoAligning={autoAligning}
           hasBacking={hasBacking}
           backing={backingVol}
           backingMuted={backingMuted}
@@ -532,12 +608,6 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
           onTrackSolo={(i, s) => updateTrack(i, { soloed: s })}
           onClose={() => setMixerOpen(false)}
         />
-      )}
-
-      {!playerReady && status === "ready" && (
-        <p className="text-xs text-zinc-500">
-          Preparing playback{soundFontProgress ? ` (${soundFontProgress}%)` : ""}…
-        </p>
       )}
 
       <audio ref={backingAudioRef} preload="auto" className="hidden" />

@@ -112,3 +112,54 @@ export function setPreferredTrackIndex(songId: string, index: number): void {
   map[songId] = index;
   window.localStorage.setItem(PREFERRED_TRACK_KEY, JSON.stringify(map));
 }
+
+// --- Audio sync settings (per song) ----------------------------------------------
+
+const AUDIO_SYNC_KEY = "learn-bass.audio-sync";
+
+/** Matches alphaTab's `model.FlatSyncPoint` shape without importing its types here. */
+export interface SyncPoint {
+  barIndex: number;
+  /** Position within the bar, 0–1. */
+  barPosition: number;
+  barOccurence: number;
+  /** Position within the recording, in ms. */
+  millisecondOffset: number;
+}
+
+export interface AudioSyncSettings {
+  /** mp3 lead-in offset in ms: the audio position where the tab's bar 0 begins. */
+  offsetMs: number;
+  /** Reserved for future multi-point tempo-drift correction. */
+  syncPoints?: SyncPoint[];
+  /** Persisted "original recording" channel state. */
+  backingVol?: number;
+  backingMuted?: boolean;
+}
+
+function readAudioSyncMap(): Record<string, AudioSyncSettings> {
+  try {
+    const raw = window.localStorage.getItem(AUDIO_SYNC_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function getAudioSync(songId: string): AudioSyncSettings | undefined {
+  if (typeof window === "undefined") return undefined;
+  return readAudioSyncMap()[songId];
+}
+
+/** Shallow-merges `patch` into this song's stored sync settings. */
+export function patchAudioSync(
+  songId: string,
+  patch: Partial<AudioSyncSettings>,
+): void {
+  if (typeof window === "undefined") return;
+  const map = readAudioSyncMap();
+  const current: AudioSyncSettings = map[songId] ?? { offsetMs: 0 };
+  map[songId] = { ...current, ...patch };
+  window.localStorage.setItem(AUDIO_SYNC_KEY, JSON.stringify(map));
+}
