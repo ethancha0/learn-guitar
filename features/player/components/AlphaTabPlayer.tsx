@@ -15,11 +15,13 @@ import {
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
 import { cn } from "@/lib/cn";
+import { useIsMobile } from "@/lib/useMediaQuery";
 import { base64ToBytes } from "@/features/library/data/tabFile";
 import {
   getPreferredTrackIndex,
   setPreferredTrackIndex,
   getTabOnly,
+  getStoredTabOnly,
   setTabOnly,
   AUDIO_SYNC_KEY,
   AUDIO_SYNC_EVENT,
@@ -29,6 +31,15 @@ import {
   type StoredSyncMap,
 } from "@/features/library/data/songStore";
 import { getBackingAudio } from "@/features/player/data/audioStore";
+import {
+  SPEED_PERCENT_MIN,
+  SPEED_PERCENT_STEP,
+  SPEED_SLIDER_MAX,
+  clampSpeed,
+  percentToSpeed,
+  speedToPercent,
+  speedToSliderPercent,
+} from "@/features/player/data/playbackSpeed";
 import {
   useBackingSync,
   setPreservesPitch,
@@ -68,50 +79,13 @@ const ALPHATAB_ASSETS = "/alphatab";
 
 const OFFSET_CLAMP_MS = 5000;
 const PERSIST_DEBOUNCE_MS = 400;
-const SPEED_MULT_MIN = 0.25;
-const SPEED_MULT_MAX = 2;
-const SPEED_PERCENT_MIN = 0;
-const SPEED_SLIDER_MAX = 100;
-const SPEED_KEYBOARD_PERCENT_MAX = 200;
-const SPEED_PERCENT_STEP = 5;
-
-function snapSpeedPercent(
-  percent: number,
-  max = SPEED_SLIDER_MAX,
-): number {
-  return (
-    Math.round(
-      Math.max(SPEED_PERCENT_MIN, Math.min(max, percent)) / SPEED_PERCENT_STEP,
-    ) * SPEED_PERCENT_STEP
-  );
-}
-
-/** Slider percent (0–100) → playback multiplier; 100% = normal speed. */
-function percentToSpeed(percent: number): number {
-  const p = snapSpeedPercent(percent);
-  if (p === 0) return SPEED_MULT_MIN;
-  return clampSpeed(p / 100);
-}
-
-/** Playback multiplier → percent label (up to 200% / 2x). */
-function speedToPercent(speed: number): number {
-  return snapSpeedPercent(speed * 100, SPEED_KEYBOARD_PERCENT_MAX);
-}
-
-/** Slider position; pins at 100% once speed exceeds 1x. */
-function speedToSliderPercent(speed: number): number {
-  return snapSpeedPercent(
-    Math.min(SPEED_SLIDER_MAX, speed * 100),
-    SPEED_SLIDER_MAX,
-  );
-}
-
-function clampSpeed(value: number): number {
-  return (
-    Math.round(Math.max(SPEED_MULT_MIN, Math.min(SPEED_MULT_MAX, value)) * 100) /
-    100
-  );
-}
+/**
+ * alphaTab draws at CSS-pixel scale, so on a phone a staff sized for a 1000px
+ * sheet leaves fret numbers around 7px tall. Enlarging the notation (and
+ * letting alphaTab reflow fewer bars per system) is what makes the tab
+ * readable at arm's length — see the Songsterr mobile layout.
+ */
+const MOBILE_NOTATION_SCALE = 1.35;
 
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -196,6 +170,10 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   // Read from localStorage after mount so the server and client agree on the
   // first render; the renderer itself is configured from the stored value.
   const [tabOnly, setTabOnlyState] = useState(false);
+  const isMobile = useIsMobile();
+  // What the renderer is currently configured with, so screen-size changes
+  // don't trigger a re-render of the whole sheet on every unrelated state pass.
+  const appliedDisplayRef = useRef({ tabOnly: false, scale: 1 });
 
   // Recording + calibration state
   const [mixerOpen, setMixerOpen] = useState(false);
@@ -389,6 +367,7 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
           },
         });
         apiRef.current = api;
+        appliedDisplayRef.current = { tabOnly: getTabOnly(), scale: 1 };
         if (process.env.NODE_ENV !== "production") {
           // Debug handle for manual sync inspection in the browser console.
           (window as unknown as { __alphaTabApi?: unknown }).__alphaTabApi = api;
@@ -465,23 +444,45 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabData, songId]);
 
+  /** Push notation size + stave profile into alphaTab, re-rendering only on a
+   *  real change (each render redraws the whole sheet). */
+  const applyDisplay = useCallback(
+    (next: { tabOnly: boolean; scale: number }) => {
+      const api = apiRef.current;
+      const alphaTab = alphaTabRef.current;
+      if (!api || !alphaTab) return;
+      const applied = appliedDisplayRef.current;
+      if (applied.tabOnly === next.tabOnly && applied.scale === next.scale)
+        return;
+      appliedDisplayRef.current = next;
+      api.settings.display.staveProfile = next.tabOnly
+        ? alphaTab.StaveProfile.Tab
+        : alphaTab.StaveProfile.Default;
+      api.settings.display.scale = next.scale;
+      api.updateSettings();
+      api.render();
+    },
+    [],
+  );
+
+  // Phones get bigger notation, and tab-only by default: two staves per system
+  // halves the size of the one that matters. An explicit preference wins.
+  // `status` is a dependency so this still lands when the viewport is measured
+  // before alphaTab finishes loading.
   useEffect(() => {
-    setTabOnlyState(getTabOnly());
-  }, []);
+    const nextTabOnly = getStoredTabOnly() ?? isMobile;
+    setTabOnlyState(nextTabOnly);
+    applyDisplay({
+      tabOnly: nextTabOnly,
+      scale: isMobile ? MOBILE_NOTATION_SCALE : 1,
+    });
+  }, [isMobile, status, applyDisplay]);
 
   function toggleTabOnly() {
     const next = !tabOnly;
     setTabOnlyState(next);
     setTabOnly(next);
-
-    const api = apiRef.current;
-    const alphaTab = alphaTabRef.current;
-    if (!api || !alphaTab) return;
-    api.settings.display.staveProfile = next
-      ? alphaTab.StaveProfile.Tab
-      : alphaTab.StaveProfile.Default;
-    api.updateSettings();
-    api.render();
+    applyDisplay({ tabOnly: next, scale: appliedDisplayRef.current.scale });
   }
 
   // Load the imported mp3 backing track + persisted per-song settings.
@@ -994,53 +995,114 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
         : "Loading recording…";
 
   return (
-    <div className="flex flex-1 flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-white/5 bg-surface-raised px-4 py-3">
-        <Button
-          size="icon"
-          aria-label={playing ? "Pause" : "Play"}
-          disabled={controlsDisabled}
-          onClick={togglePlay}
-        >
-          {playing ? (
-            <Pause className="h-4 w-4" />
-          ) : (
-            <Play className="h-4 w-4" />
-          )}
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Stop"
-          disabled={controlsDisabled}
-          onClick={stop}
-        >
-          <Square className="h-4 w-4" />
-        </Button>
-
-        {trackNames.length > 0 && (
-          <label className="flex items-center gap-1.5 text-xs text-zinc-400">
-            <Select
-              aria-label="Instrument"
-              value={selectedTrack}
-              onChange={(e) => selectTrack(Number(e.target.value))}
-              className="max-w-[13rem]"
-            >
-              {trackNames.map((name, i) => (
-                <option key={i} value={i}>
-                  {name}
-                </option>
-              ))}
-            </Select>
-            {tuning && (
-              <span className="hidden text-[11px] text-zinc-500 sm:inline">
-                {tuning}
-              </span>
+    <div className="flex min-h-0 flex-1 flex-col gap-2 md:gap-3">
+      {/* On phones the bar drops below the score (`order-2`) so the controls
+          sit under the thumb and the tab gets the top of the screen. */}
+      <div className="order-2 flex flex-col gap-2 rounded-lg border border-white/5 bg-surface-raised px-2 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:order-none md:flex-row md:flex-wrap md:items-center md:gap-3 md:px-4 md:py-3">
+        {/* `md:contents` dissolves this phone-only row on desktop, so the
+            toolbar stays one flowing line there. */}
+        <div className="flex items-center gap-2 md:contents">
+          <Button
+            size="icon"
+            aria-label={playing ? "Pause" : "Play"}
+            disabled={controlsDisabled}
+            onClick={togglePlay}
+            className="h-12 w-12 shrink-0 md:h-9 md:w-9"
+          >
+            {playing ? (
+              <Pause className="h-5 w-5 md:h-4 md:w-4" />
+            ) : (
+              <Play className="h-5 w-5 md:h-4 md:w-4" />
             )}
-          </label>
-        )}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Stop"
+            disabled={controlsDisabled}
+            onClick={stop}
+            className="hidden md:inline-flex"
+          >
+            <Square className="h-4 w-4" />
+          </Button>
 
-        <div className="flex min-w-[12rem] flex-1 items-center gap-3 text-xs text-zinc-400">
+          {trackNames.length > 0 && (
+            <label className="flex min-w-0 flex-1 items-center gap-1.5 text-xs text-zinc-400 md:flex-none">
+              <Select
+                aria-label="Instrument"
+                value={selectedTrack}
+                onChange={(e) => selectTrack(Number(e.target.value))}
+                className="h-10 w-full min-w-0 md:h-8 md:w-auto md:max-w-[13rem]"
+              >
+                {trackNames.map((name, i) => (
+                  <option key={i} value={i}>
+                    {name}
+                  </option>
+                ))}
+              </Select>
+              {tuning && (
+                <span className="hidden text-[11px] text-zinc-500 lg:inline">
+                  {tuning}
+                </span>
+              )}
+            </label>
+          )}
+
+          {/* Phone speed readout — the slider itself lives in the sheet. */}
+          <Button
+            variant="outline"
+            size="sm"
+            aria-label="Playback speed"
+            onClick={() => setMixerOpen(true)}
+            className="h-10 shrink-0 tabular-nums md:hidden"
+          >
+            {speedToPercent(speed)}%
+          </Button>
+
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Toggle loop"
+            aria-pressed={looping}
+            disabled={controlsDisabled}
+            className={cn(
+              "h-10 w-10 shrink-0 md:h-9 md:w-9",
+              looping && "text-accent",
+            )}
+            onClick={toggleLoop}
+          >
+            <Repeat className="h-5 w-5 md:h-4 md:w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Tab only (hide standard notation)"
+            title="Tab only (hide standard notation)"
+            aria-pressed={tabOnly}
+            disabled={status !== "ready"}
+            className={cn("hidden md:inline-flex", tabOnly && "text-accent")}
+            onClick={toggleTabOnly}
+          >
+            <Music className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Toggle mixer"
+            aria-pressed={mixerOpen}
+            className={cn(
+              "h-10 w-10 shrink-0 md:h-9 md:w-9",
+              mixerOpen && "text-accent",
+            )}
+            onClick={() => setMixerOpen((o) => !o)}
+          >
+            <SlidersHorizontal className="h-5 w-5 md:h-4 md:w-4" />
+          </Button>
+        </div>
+
+        {/* Scrubber above the buttons on a phone: it reads as a continuation
+            of the score, and keeps the tappable row at the bottom edge. */}
+        <div className="order-first flex items-center gap-2 text-xs text-zinc-400 md:order-none md:min-w-[12rem] md:flex-1 md:gap-3">
           <span className="tabular-nums">{formatMs(positionMs)}</span>
           <input
             type="range"
@@ -1067,13 +1129,13 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
                 );
               }
             }}
-            className="h-1 flex-1 cursor-pointer accent-accent disabled:cursor-not-allowed disabled:opacity-50"
+            className="h-1.5 flex-1 cursor-pointer accent-accent disabled:cursor-not-allowed disabled:opacity-50 md:h-1"
             aria-label="Seek"
           />
           <span className="tabular-nums">{formatMs(durationMs)}</span>
         </div>
 
-        <label className="flex items-center gap-2 text-xs text-zinc-400">
+        <label className="hidden items-center gap-2 text-xs text-zinc-400 md:flex">
           <span className="shrink-0">Speed</span>
           <input
             type="range"
@@ -1094,10 +1156,10 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
           </span>
         </label>
 
-        {/* Recording and synth levels stay side by side; flex-wrap would
-            otherwise strand them on separate rows. */}
+        {/* Levels, alignment and printing are desktop-only in the bar; on a
+            phone they live in the mixer sheet. */}
         {(hasBacking || synthNoteCount > 0) && (
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="hidden shrink-0 items-center gap-2 md:flex">
             {hasBacking && (
               <BackingVolumeControl
                 volume={backingVol}
@@ -1121,57 +1183,26 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
         )}
 
         {hasBacking && (
-          <AudioOffsetControl
-            compact
-            offsetMs={offsetMs}
-            onChange={handleOffsetChange}
-            onReset={handleOffsetReset}
-            onAutoAlign={handleAutoAlign}
-            autoAligning={autoAligning}
-            disabled={controlsDisabled}
-          />
+          <div className="hidden md:block">
+            <AudioOffsetControl
+              compact
+              offsetMs={offsetMs}
+              onChange={handleOffsetChange}
+              onReset={handleOffsetReset}
+              onAutoAlign={handleAutoAlign}
+              autoAligning={autoAligning}
+              disabled={controlsDisabled}
+            />
+          </div>
         )}
 
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Toggle loop"
-          aria-pressed={looping}
-          disabled={controlsDisabled}
-          className={cn(looping && "text-accent")}
-          onClick={toggleLoop}
-        >
-          <Repeat className="h-4 w-4" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Tab only (hide standard notation)"
-          title="Tab only (hide standard notation)"
-          aria-pressed={tabOnly}
-          disabled={status !== "ready"}
-          className={cn(tabOnly && "text-accent")}
-          onClick={toggleTabOnly}
-        >
-          <Music className="h-4 w-4" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Toggle mixer"
-          aria-pressed={mixerOpen}
-          className={cn(mixerOpen && "text-accent")}
-          onClick={() => setMixerOpen((o) => !o)}
-        >
-          <SlidersHorizontal className="h-4 w-4" />
-        </Button>
         {IS_DEV && hasBacking && (
           <Button
             variant="ghost"
             size="icon"
             aria-label="Sync diagnostics"
             aria-pressed={diagOpen}
-            className={cn(diagOpen && "text-accent")}
+            className={cn("hidden md:inline-flex", diagOpen && "text-accent")}
             onClick={() => setDiagOpen((o) => !o)}
           >
             <Activity className="h-4 w-4" />
@@ -1182,6 +1213,7 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
           size="icon"
           aria-label="Print"
           disabled={status !== "ready"}
+          className="hidden md:inline-flex"
           onClick={() => apiRef.current?.print()}
         >
           <Printer className="h-4 w-4" />
@@ -1190,7 +1222,7 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
 
       <div
         ref={viewportRef}
-        className="relative min-h-[360px] flex-1 overflow-auto rounded-lg border border-white/5 bg-white text-black"
+        className="relative order-1 min-h-[16rem] flex-1 overflow-auto overscroll-contain rounded-lg border border-white/5 bg-white text-black md:order-none md:min-h-[360px]"
       >
         {overlayVisible && (
           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-surface-raised text-sm text-zinc-400">
@@ -1198,12 +1230,19 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
             <p>{overlayText}</p>
           </div>
         )}
-        <div ref={hostRef} className="alphatab-host p-4" />
+        <div ref={hostRef} className="alphatab-host p-1 md:p-4" />
       </div>
 
       {mixerOpen && (
         <Mixer
           recordMode
+          speedPercent={speedToPercent(speed)}
+          speedSliderPercent={speedToSliderPercent(speed)}
+          onSpeedPercent={(p) => changeSpeed(percentToSpeed(p))}
+          speedDisabled={controlsDisabled}
+          tabOnly={tabOnly}
+          onTabOnlyToggle={toggleTabOnly}
+          tabOnlyDisabled={status !== "ready"}
           offsetMs={offsetMs}
           onOffsetChange={handleOffsetChange}
           onOffsetReset={handleOffsetReset}

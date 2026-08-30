@@ -123,6 +123,16 @@ export function getTabOnly(): boolean {
   return window.localStorage.getItem(TAB_ONLY_KEY) === "1";
 }
 
+/**
+ * The stored preference, or `undefined` when the user has never set one — the
+ * player defaults it by screen size, which `getTabOnly` can't express.
+ */
+export function getStoredTabOnly(): boolean | undefined {
+  if (typeof window === "undefined") return undefined;
+  const raw = window.localStorage.getItem(TAB_ONLY_KEY);
+  return raw === null ? undefined : raw === "1";
+}
+
 export function setTabOnly(value: boolean): void {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(TAB_ONLY_KEY, value ? "1" : "0");

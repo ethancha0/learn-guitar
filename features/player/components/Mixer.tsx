@@ -8,10 +8,17 @@ import {
   Music2,
   AudioWaveform,
   Guitar,
+  Gauge,
+  Music,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
+import {
+  SPEED_PERCENT_MIN,
+  SPEED_PERCENT_STEP,
+  SPEED_SLIDER_MAX,
+} from "@/features/player/data/playbackSpeed";
 import { AudioOffsetControl } from "./AudioOffsetControl";
 
 export interface MixerTrack {
@@ -26,6 +33,14 @@ export interface MixerTrack {
 interface MixerProps {
   /** True while the imported mp3 is the clock (synth instruments are silent). */
   recordMode: boolean;
+  /** Speed label (can exceed 100%) and slider position (capped at 100%). */
+  speedPercent: number;
+  speedSliderPercent: number;
+  onSpeedPercent: (percent: number) => void;
+  speedDisabled?: boolean;
+  tabOnly: boolean;
+  onTabOnlyToggle: () => void;
+  tabOnlyDisabled?: boolean;
   offsetMs: number;
   onOffsetChange: (nextMs: number) => void;
   onOffsetReset: () => void;
@@ -188,8 +203,19 @@ function ChannelRow({
   );
 }
 
-/** Channel strip for the imported recording + score tracks. */
+/**
+ * Channel strip for the imported recording + score tracks. A right-hand rail on
+ * desktop; on phones it becomes a bottom sheet and doubles as the drawer for
+ * the transport controls that don't fit in the bar (speed, notation mode).
+ */
 export function Mixer({
+  speedPercent,
+  speedSliderPercent,
+  onSpeedPercent,
+  speedDisabled,
+  tabOnly,
+  onTabOnlyToggle,
+  tabOnlyDisabled,
   offsetMs,
   onOffsetChange,
   onOffsetReset,
@@ -212,81 +238,143 @@ export function Mixer({
   onClose,
 }: MixerProps) {
   return (
-    <aside className="fixed right-0 top-0 z-40 flex h-dvh w-72 flex-col gap-3 border-l border-white/10 bg-surface-raised p-3 shadow-2xl">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-zinc-200">Mixer</h2>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Hide mixer"
-          onClick={onClose}
-        >
-          <X className="h-4 w-4" />
-        </Button>
-      </div>
+    <>
+      {/* Tap-outside-to-close, phone only; the desktop rail sits beside the
+          score rather than over it. */}
+      <div
+        className="fixed inset-0 z-30 bg-black/50 md:hidden"
+        onClick={onClose}
+        aria-hidden
+      />
+      <aside className="fixed inset-x-0 bottom-0 z-40 flex max-h-[80dvh] flex-col gap-3 rounded-t-2xl border-t border-white/10 bg-surface-raised p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-2xl md:inset-x-auto md:right-0 md:top-0 md:h-dvh md:max-h-none md:w-72 md:rounded-none md:border-l md:border-t-0 md:pb-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-zinc-200">Mixer</h2>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Hide mixer"
+            onClick={onClose}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
 
-      <div className="flex flex-1 flex-col gap-3 overflow-y-auto">
-        {(hasBacking || hasSynth) && (
+        <div className="flex flex-1 flex-col gap-3 overflow-y-auto">
           <div className="flex flex-col gap-2">
             <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
-              Mix
+              Playback
             </p>
-            {hasBacking && (
-              <ChannelRow
-                icon={<AudioWaveform className="h-4 w-4" />}
-                label="Original recording"
-                sublabel="mp3"
-                volume={backing}
-                onVolume={onBacking}
-                muted={backingMuted}
-                onMute={onBackingMute}
-              />
-            )}
-            {hasSynth && (
-              <ChannelRow
-                icon={<Guitar className="h-4 w-4" />}
-                label={synthTrackName ? `Synth · ${synthTrackName}` : "Synth instrument"}
-                sublabel="tab"
-                volume={synth}
-                onVolume={onSynth}
-                muted={synthMuted}
-                onMute={onSynthMute}
-              />
-            )}
-            {hasBacking && (
-              <div className="rounded-md bg-surface-overlay px-3 py-2.5">
-                <AudioOffsetControl
-                  offsetMs={offsetMs}
-                  onChange={onOffsetChange}
-                  onReset={onOffsetReset}
-                  onAutoAlign={onAutoAlign}
-                  autoAligning={autoAligning}
-                />
+            <div className="flex flex-col gap-1.5 rounded-md bg-surface-overlay px-3 py-2.5">
+              <div className="flex items-center gap-2">
+                <Gauge className="h-4 w-4 shrink-0 text-zinc-400" />
+                <span className="flex-1 text-xs font-medium text-zinc-200">
+                  Speed
+                </span>
+                <span className="text-xs tabular-nums text-zinc-400">
+                  {speedPercent}%
+                </span>
               </div>
-            )}
+              <input
+                type="range"
+                min={SPEED_PERCENT_MIN}
+                max={SPEED_SLIDER_MAX}
+                step={SPEED_PERCENT_STEP}
+                value={speedSliderPercent}
+                disabled={speedDisabled}
+                onChange={(e) => onSpeedPercent(Number(e.target.value))}
+                aria-label="Playback speed"
+                aria-valuetext={`${speedPercent}%`}
+                className="h-1.5 w-full cursor-pointer accent-accent disabled:cursor-not-allowed disabled:opacity-50"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={onTabOnlyToggle}
+              disabled={tabOnlyDisabled}
+              aria-pressed={tabOnly}
+              className="flex items-center gap-2 rounded-md bg-surface-overlay px-3 py-2.5 text-left disabled:opacity-50"
+            >
+              <Music className="h-4 w-4 shrink-0 text-zinc-400" />
+              <span className="flex-1 text-xs font-medium text-zinc-200">
+                Tab only
+              </span>
+              <span
+                className={cn(
+                  "text-[10px] font-semibold uppercase",
+                  tabOnly ? "text-accent" : "text-zinc-500",
+                )}
+              >
+                {tabOnly ? "On" : "Off"}
+              </span>
+            </button>
           </div>
-        )}
 
-        <div className="flex flex-col gap-2">
-          <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
-            Instruments
-          </p>
-          {tracks.map((t) => (
-            <ChannelRow
-              key={t.index}
-              icon={<Music2 className="h-4 w-4" />}
-              label={t.name}
-              hideVolume
-              shown={t.index === shownTrackIndex}
-              onShow={() => onShowTrack(t.index)}
-            />
-          ))}
-          <p className="px-1 text-[11px] leading-snug text-zinc-500">
-            The eye picks which part is shown in the tab — and which part the
-            synth plays. Level for it is under <em>Mix</em> above.
-          </p>
+          {(hasBacking || hasSynth) && (
+            <div className="flex flex-col gap-2">
+              <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+                Mix
+              </p>
+              {hasBacking && (
+                <ChannelRow
+                  icon={<AudioWaveform className="h-4 w-4" />}
+                  label="Original recording"
+                  sublabel="mp3"
+                  volume={backing}
+                  onVolume={onBacking}
+                  muted={backingMuted}
+                  onMute={onBackingMute}
+                />
+              )}
+              {hasSynth && (
+                <ChannelRow
+                  icon={<Guitar className="h-4 w-4" />}
+                  label={
+                    synthTrackName
+                      ? `Synth · ${synthTrackName}`
+                      : "Synth instrument"
+                  }
+                  sublabel="tab"
+                  volume={synth}
+                  onVolume={onSynth}
+                  muted={synthMuted}
+                  onMute={onSynthMute}
+                />
+              )}
+              {hasBacking && (
+                <div className="rounded-md bg-surface-overlay px-3 py-2.5">
+                  <AudioOffsetControl
+                    offsetMs={offsetMs}
+                    onChange={onOffsetChange}
+                    onReset={onOffsetReset}
+                    onAutoAlign={onAutoAlign}
+                    autoAligning={autoAligning}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="flex flex-col gap-2">
+            <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+              Instruments
+            </p>
+            {tracks.map((t) => (
+              <ChannelRow
+                key={t.index}
+                icon={<Music2 className="h-4 w-4" />}
+                label={t.name}
+                hideVolume
+                shown={t.index === shownTrackIndex}
+                onShow={() => onShowTrack(t.index)}
+              />
+            ))}
+            <p className="px-1 text-[11px] leading-snug text-zinc-500">
+              The eye picks which part is shown in the tab — and which part the
+              synth plays. Level for it is under <em>Mix</em> above.
+            </p>
+          </div>
         </div>
-      </div>
-    </aside>
+      </aside>
+    </>
   );
 }
