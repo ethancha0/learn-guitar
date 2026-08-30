@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { Anchor, Loader2, Plus, Trash2, Wand2 } from "lucide-react";
-import { Button } from "@/components/ui/Button";
+import { Anchor, AlertTriangle, Loader2, Plus, Trash2, Wand2 } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { Button } from "@/components/ui/Button";
 import {
   patchAudioSync,
   removeSyncAnchor,
@@ -28,9 +28,13 @@ interface SyncAnchorEditorProps {
   posSec: number;
   onsetEnv: OnsetEnvelope | null;
   selectedScoreTime: number | null;
+  /** Score time → the audio time the built map actually lands on. */
+  appliedAudioTimes: Map<number, number>;
   onAnchorsChange: () => void;
-  onSelectScoreTime: (scoreTime: number | null) => void;
 }
+
+/** An anchor is "applied" if the built map lands within this of its audio time. */
+const ANCHOR_TOLERANCE_SEC = 0.02;
 
 function fmt(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -48,14 +52,18 @@ export function SyncAnchorEditor({
   posSec,
   onsetEnv,
   selectedScoreTime,
+  appliedAudioTimes,
   onAnchorsChange,
-  onSelectScoreTime,
 }: SyncAnchorEditorProps) {
   const [dtwRunning, setDtwRunning] = useState(false);
   const [message, setMessage] = useState<string | undefined>();
   const [draftAnchors, setDraftAnchors] = useState<SyncAnchor[] | null>(null);
 
   const displayAnchors = draftAnchors ?? anchors;
+  const conflicting = displayAnchors.filter((a) => {
+    const landed = appliedAudioTimes.get(a.scoreTime);
+    return landed != null && Math.abs(landed - a.audioTime) > ANCHOR_TOLERANCE_SEC;
+  });
 
   const placeAnchorAtPlayhead = useCallback(() => {
     if (!syncMap || selectedScoreTime == null) return;
@@ -167,32 +175,10 @@ export function SyncAnchorEditor({
       </div>
 
       <p className="text-[11px] leading-snug text-zinc-500">
-        Select a bar below, then click the waveform or histogram to place an
-        anchor. Shift+click snaps to the nearest onset peak. Anchors apply
+        Use the score row above: click a note, then Shift+click an onset peak.
+        Drag red numbered anchors on the top rail to fine-tune. Anchors apply
         instantly without re-running DTW.
       </p>
-
-      <div className="flex flex-wrap gap-1.5">
-        {timeline.bars.map((b) => (
-          <button
-            key={b.barIndex}
-            type="button"
-            onClick={() =>
-              onSelectScoreTime(
-                selectedScoreTime === b.scoreTimeSec ? null : b.scoreTimeSec,
-              )
-            }
-            className={cn(
-              "rounded px-1.5 py-0.5 text-[10px] tabular-nums",
-              selectedScoreTime === b.scoreTimeSec
-                ? "bg-accent/20 text-accent"
-                : "bg-surface text-zinc-400 hover:text-zinc-200",
-            )}
-          >
-            {b.barIndex + 1}
-          </button>
-        ))}
-      </div>
 
       <div className="flex flex-wrap gap-2">
         <Button
@@ -237,15 +223,24 @@ export function SyncAnchorEditor({
             <tr>
               <th className="py-1 pr-2">Score</th>
               <th className="py-1 pr-2">Audio</th>
+              <th className="py-1 pr-2">Applied</th>
               <th className="py-1 pr-2">Label</th>
               <th className="py-1" />
             </tr>
           </thead>
           <tbody className="tabular-nums text-zinc-300">
-            {displayAnchors.map((a) => (
+            {displayAnchors.map((a) => {
+              const landed = appliedAudioTimes.get(a.scoreTime);
+              const applied =
+                landed == null ||
+                Math.abs(landed - a.audioTime) <= ANCHOR_TOLERANCE_SEC;
+              return (
               <tr key={a.scoreTime} className="border-t border-white/5">
                 <td className="py-1 pr-2">{fmt(a.scoreTime)}</td>
                 <td className="py-1 pr-2">{fmt(a.audioTime)}</td>
+                <td className={cn("py-1 pr-2", applied ? "text-accent" : "text-amber-400")}>
+                  {applied ? "yes" : `no — lands ${fmt(landed!)}`}
+                </td>
                 <td className="py-1 pr-2 text-zinc-500">{a.label ?? "—"}</td>
                 <td className="py-1 text-right">
                   {!draftAnchors && (
@@ -260,9 +255,25 @@ export function SyncAnchorEditor({
                   )}
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
+      )}
+
+      {conflicting.length > 0 && (
+        <p className="flex items-start gap-1.5 text-[11px] leading-snug text-amber-300">
+          <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+          <span>
+            {conflicting.length} anchor{conflicting.length === 1 ? " is" : "s are"}{" "}
+            not being applied (shown amber on the rail). A sync map has to move
+            forward through the recording, and {conflicting.length === 1 ? "it points" : "they point"}{" "}
+            back before an earlier anchor, so the map flattens{" "}
+            {conflicting.length === 1 ? "it" : "them"} away. Delete the earlier
+            conflicting anchor, or re-place {conflicting.length === 1 ? "this one" : "these"}{" "}
+            later in the recording.
+          </span>
+        </p>
       )}
 
       {message && (

@@ -27,6 +27,16 @@ export interface SynthNote {
   midi: number;
   /** 0..1 */
   velocity: number;
+  /** Tab string, 1 = lowest-pitched (alphaTab's convention). Absent if unfretted. */
+  string?: number;
+  /** Fret number for `string`. */
+  fret?: number;
+}
+
+export interface TrackTab {
+  notes: SynthNote[];
+  /** Number of strings in the track's tuning (6 guitar, 4 bass, …). */
+  stringCount: number;
 }
 
 // --- extraction --------------------------------------------------------------
@@ -90,6 +100,14 @@ export async function extractTrackNotes(
   gpBytes: Uint8Array,
   trackIndex: number,
 ): Promise<SynthNote[]> {
+  return (await extractTrackTab(gpBytes, trackIndex)).notes;
+}
+
+/** As {@link extractTrackNotes}, plus the tab geometry needed to draw a staff. */
+export async function extractTrackTab(
+  gpBytes: Uint8Array,
+  trackIndex: number,
+): Promise<TrackTab> {
   const alphaTab = await import("@coderline/alphatab");
   const settings = new alphaTab.Settings();
   const score = alphaTab.importer.ScoreLoader.loadScoreFromBytes(gpBytes, settings);
@@ -102,7 +120,7 @@ export async function extractTrackNotes(
   gen.generate();
 
   const track = score.tracks[trackIndex];
-  if (!track) return [];
+  if (!track) return { notes: [], stringCount: 6 };
 
   const segments = buildTempoMap(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -117,11 +135,12 @@ export async function extractTrackNotes(
       for (const voice of bar.voices) {
         for (const beat of voice.beats) {
           if (beat.isRest) continue;
-          const startSec = tickToSec(segments, beat.playbackStart);
-          const endSec = tickToSec(
-            segments,
-            beat.playbackStart + beat.playbackDuration,
-          );
+          // `beat.playbackStart` is relative to its own bar — using it directly
+          // stacks the whole song into bar 1. `absolutePlaybackStart` adds
+          // `masterBar.start`, giving the score-absolute tick the tempo map wants.
+          const startTick = beat.absolutePlaybackStart;
+          const startSec = tickToSec(segments, startTick);
+          const endSec = tickToSec(segments, startTick + beat.playbackDuration);
           for (const note of beat.notes) {
             // Ties continue the previous note; dead notes are percussive mutes.
             if (note.isTieDestination || note.isDead) continue;
@@ -131,6 +150,8 @@ export async function extractTrackNotes(
               scoreTime: startSec,
               scoreDuration: Math.max(0.05, endSec - startSec),
               midi: midiPitch,
+              string: note.isStringed ? note.string : undefined,
+              fret: note.isStringed ? note.fret : undefined,
               // Guitar Pro dynamics run ppp(0)..fff(7).
               velocity: clamp(
                 0.35 + (typeof beat.dynamics === "number" ? beat.dynamics : 5) * 0.08,
@@ -144,7 +165,10 @@ export async function extractTrackNotes(
     }
   }
   notes.sort((a, b) => a.scoreTime - b.scoreTime);
-  return notes;
+
+  const stringCount =
+    track.staves.reduce((n, st) => Math.max(n, st.tuning?.length ?? 0), 0) || 6;
+  return { notes, stringCount };
 }
 
 // --- playback ----------------------------------------------------------------

@@ -115,7 +115,7 @@ export function setPreferredTrackIndex(songId: string, index: number): void {
 
 // --- Audio sync settings (per song) ----------------------------------------------
 
-const AUDIO_SYNC_KEY = "learn-bass.audio-sync";
+export const AUDIO_SYNC_KEY = "learn-bass.audio-sync";
 
 /**
  * A persisted score↔audio mapping. `points` are `{ scoreTime, audioTime }` in

@@ -18,6 +18,7 @@ import { base64ToBytes } from "@/features/library/data/tabFile";
 import {
   getPreferredTrackIndex,
   setPreferredTrackIndex,
+  AUDIO_SYNC_KEY,
   getAudioSync,
   patchAudioSync,
   type StoredSyncMap,
@@ -61,6 +62,61 @@ const ALPHATAB_ASSETS = "/alphatab";
 
 const OFFSET_CLAMP_MS = 5000;
 const PERSIST_DEBOUNCE_MS = 400;
+const SPEED_MULT_MIN = 0.25;
+const SPEED_MULT_MAX = 2;
+const SPEED_PERCENT_MIN = 0;
+const SPEED_SLIDER_MAX = 100;
+const SPEED_KEYBOARD_PERCENT_MAX = 200;
+const SPEED_PERCENT_STEP = 5;
+
+function snapSpeedPercent(
+  percent: number,
+  max = SPEED_SLIDER_MAX,
+): number {
+  return (
+    Math.round(
+      Math.max(SPEED_PERCENT_MIN, Math.min(max, percent)) / SPEED_PERCENT_STEP,
+    ) * SPEED_PERCENT_STEP
+  );
+}
+
+/** Slider percent (0–100) → playback multiplier; 100% = normal speed. */
+function percentToSpeed(percent: number): number {
+  const p = snapSpeedPercent(percent);
+  if (p === 0) return SPEED_MULT_MIN;
+  return clampSpeed(p / 100);
+}
+
+/** Playback multiplier → percent label (up to 200% / 2x). */
+function speedToPercent(speed: number): number {
+  return snapSpeedPercent(speed * 100, SPEED_KEYBOARD_PERCENT_MAX);
+}
+
+/** Slider position; pins at 100% once speed exceeds 1x. */
+function speedToSliderPercent(speed: number): number {
+  return snapSpeedPercent(
+    Math.min(SPEED_SLIDER_MAX, speed * 100),
+    SPEED_SLIDER_MAX,
+  );
+}
+
+function clampSpeed(value: number): number {
+  return (
+    Math.round(Math.max(SPEED_MULT_MIN, Math.min(SPEED_MULT_MAX, value)) * 100) /
+    100
+  );
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  return (
+    tag === "INPUT" ||
+    tag === "TEXTAREA" ||
+    tag === "SELECT" ||
+    target.isContentEditable
+  );
+}
 
 const NOTE_NAMES = [
   "C",
@@ -399,6 +455,23 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     };
   }, [songId]);
 
+  // The sync-debug page writes anchors and DTW maps to the same store. Arriving
+  // back here by navigation remounts the player, which re-reads them — but a
+  // player left open in another tab would otherwise keep a stale map *and*
+  // write it back over the edit on its next persist. `storage` only fires in
+  // the tabs that did not do the writing, so this can't loop with our own
+  // persists or fight a slider mid-drag.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== null && e.key !== AUDIO_SYNC_KEY) return;
+      const sync = getAudioSync(songId);
+      setOffsetMs(sync?.offsetMs ?? 0);
+      setStoredSyncMap(sync?.syncMap ?? null);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [songId]);
+
   useEffect(() => {
     scrubbingRef.current = scrubbing;
   }, [scrubbing]);
@@ -556,14 +629,15 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     };
   }, []);
 
-  function togglePlay() {
+  const togglePlay = useCallback(() => {
     // Resume the synth's AudioContext on the click itself. Chrome starts it
     // suspended, and the path click → alphaTab → <audio> play event is too many
     // async hops to reliably keep the user-activation that `resume()` needs.
     synthRef.current?.resume();
     apiRef.current?.playPause();
-  }
-  function stop() {
+  }, []);
+
+  const stop = useCallback(() => {
     apiRef.current?.stop();
     setPositionMs(0);
     synthRef.current?.stop();
@@ -572,17 +646,33 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
       audio.pause();
       audio.currentTime = 0;
     }
-  }
+  }, []);
+
   function toggleLoop() {
     const next = !looping;
     setLooping(next);
     if (apiRef.current) apiRef.current.isLooping = next;
   }
-  function changeSpeed(value: number) {
-    setSpeed(value);
+
+  const changeSpeed = useCallback((value: number) => {
+    const next = clampSpeed(value);
+    setSpeed(next);
     // alphaTab forwards the rate to our media handler (which keeps pitch).
-    if (apiRef.current) apiRef.current.playbackSpeed = value;
-  }
+    if (apiRef.current) apiRef.current.playbackSpeed = next;
+  }, []);
+
+  const adjustSpeed = useCallback(
+    (direction: "slower" | "faster") => {
+      setSpeed((prev) => {
+        const delta =
+          direction === "slower" ? -SPEED_PERCENT_STEP : SPEED_PERCENT_STEP;
+        const next = percentToSpeed(speedToPercent(prev) + delta);
+        if (apiRef.current) apiRef.current.playbackSpeed = next;
+        return next;
+      });
+    },
+    [],
+  );
 
   function selectTrack(index: number) {
     setSelectedTrack(index);
@@ -716,6 +806,39 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   }
 
   const controlsDisabled = !playerReady || !audioMetaReady;
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (controlsDisabled || isEditableTarget(e.target)) return;
+
+      switch (e.code) {
+        case "Space":
+          e.preventDefault();
+          togglePlay();
+          return;
+        case "Backspace":
+          e.preventDefault();
+          stop();
+          return;
+        case "Minus":
+        case "NumpadSubtract":
+          e.preventDefault();
+          adjustSpeed("slower");
+          return;
+        case "Equal":
+        case "NumpadAdd":
+          e.preventDefault();
+          adjustSpeed("faster");
+          return;
+        default:
+          return;
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [controlsDisabled, togglePlay, stop, adjustSpeed]);
+
   const overlayVisible =
     status === "error" || status !== "ready" || !audioMetaReady;
   const overlayText =
@@ -805,19 +928,25 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
           <span className="tabular-nums">{formatMs(durationMs)}</span>
         </div>
 
-        <label className="flex items-center gap-1 text-xs text-zinc-400">
-          Speed
-          <Select
-            value={speed}
+        <label className="flex items-center gap-2 text-xs text-zinc-400">
+          <span className="shrink-0">Speed</span>
+          <input
+            type="range"
+            min={SPEED_PERCENT_MIN}
+            max={SPEED_SLIDER_MAX}
+            step={SPEED_PERCENT_STEP}
+            value={speedToSliderPercent(speed)}
             disabled={controlsDisabled}
-            onChange={(e) => changeSpeed(Number(e.target.value))}
-          >
-            {[0.25, 0.5, 0.75, 1, 1.25, 1.5, 2].map((v) => (
-              <option key={v} value={v}>
-                {v}x
-              </option>
-            ))}
-          </Select>
+            onChange={(e) =>
+              changeSpeed(percentToSpeed(Number(e.target.value)))
+            }
+            className="h-1 w-24 cursor-pointer accent-accent disabled:cursor-not-allowed disabled:opacity-50"
+            aria-label="Playback speed"
+            aria-valuetext={`${speedToPercent(speed)}%`}
+          />
+          <span className="w-9 shrink-0 tabular-nums">
+            {speedToPercent(speed)}%
+          </span>
         </label>
 
         {/* Recording and synth levels stay side by side; flex-wrap would

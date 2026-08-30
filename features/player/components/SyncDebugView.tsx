@@ -13,7 +13,13 @@ import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
 import { cn } from "@/lib/cn";
 import { base64ToBytes } from "@/features/library/data/tabFile";
-import { useSongById, getAudioSync, type SyncAnchor } from "@/features/library/data/songStore";
+import {
+  useSongById,
+  getAudioSync,
+  getPreferredTrackIndex,
+  upsertSyncAnchor,
+  type SyncAnchor,
+} from "@/features/library/data/songStore";
 import { getBackingAudio } from "@/features/player/data/audioStore";
 import { buildPlaybackSyncMap } from "@/features/player/data/buildSyncMap";
 import type { SyncMap } from "@/features/player/data/syncMap";
@@ -29,28 +35,25 @@ import {
   type OnsetHit,
   type OnsetEnvelope,
 } from "@/features/player/data/onsetDetect";
-import {
-  computeOnsetHistogram,
-  drawOnsetHistogram,
-  nearestPeakSec,
-  type OnsetHistogram,
-} from "@/features/player/data/onsetHistogram";
-import { upsertSyncAnchor } from "@/features/library/data/songStore";
 import { SyncDebugSession } from "@/features/player/data/syncDebugSession";
 import { SyncAnchorEditor } from "@/features/player/components/SyncAnchorEditor";
+import {
+  alignmentLayout,
+  drawAlignmentStack,
+  hitAlignmentRegion,
+  hitAnchor,
+  hitScoreEvent,
+  type ScoreMarker,
+} from "@/features/player/components/SyncAlignmentCanvas";
+import {
+  extractTrackTab,
+  type SynthNote,
+} from "@/features/player/data/trackSynth";
 
-const WAVE_H = 120;
-const HIST_H = 60;
-const CANVAS_H = WAVE_H + HIST_H;
-const MARKER_SOURCES = ["bars", "beats", "syncMap"] as const;
-type MarkerSource = (typeof MARKER_SOURCES)[number];
+interface Marker extends ScoreMarker {}
 
-interface Marker {
-  label: string;
-  scoreTimeSec: number;
-  audioTimeSec: number;
-  isDownbeat: boolean;
-}
+/** An anchor is "applied" if the built map lands within this of its audio time. */
+export const ANCHOR_TOLERANCE_SEC = 0.02;
 
 function fmt(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) sec = 0;
@@ -74,13 +77,18 @@ export function SyncDebugView({ songId }: { songId: string }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [syncVersion, setSyncVersion] = useState(0);
   const [selectedScoreTime, setSelectedScoreTime] = useState<number | null>(null);
+  const [scoreNotes, setScoreNotes] = useState<SynthNote[]>([]);
+  const [stringCount, setStringCount] = useState(6);
+  const [dragAnchor, setDragAnchor] = useState<{
+    scoreTime: number;
+    audioTime: number;
+  } | null>(null);
 
   const [pxPerSec, setPxPerSec] = useState(80);
   const [rate, setRate] = useState(1);
   const [volume, setVolume] = useState(0.85);
-  const [markerSource, setMarkerSource] = useState<MarkerSource>("bars");
   const [clickMode, setClickMode] = useState<"off" | "bars" | "beats">("off");
-  const [clickVol, setClickVol] = useState(0.4);
+  const [clickVol] = useState(0.4);
   const [playing, setPlaying] = useState(false);
   const [posSec, setPosSec] = useState(0);
   const [measuring, setMeasuring] = useState(false);
@@ -92,6 +100,8 @@ export function SyncDebugView({ songId }: { songId: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const baseCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const rafRef = useRef<number | null>(null);
+
+  const layout = useMemo(() => alignmentLayout(stringCount), [stringCount]);
 
   // --- load -----------------------------------------------------------------
   useEffect(() => {
@@ -111,8 +121,15 @@ export function SyncDebugView({ songId }: { songId: string }) {
         setBuffer(decoded);
 
         if (song?.tabData) {
-          const tl = await extractScoreTimeline(base64ToBytes(song.tabData));
+          const gpBytes = base64ToBytes(song.tabData);
+          const tl = await extractScoreTimeline(gpBytes);
           if (!cancelled) setTimeline(tl);
+          const trackIdx = getPreferredTrackIndex(songId) ?? 0;
+          const tab = await extractTrackTab(gpBytes, trackIdx);
+          if (!cancelled) {
+            setScoreNotes(tab.notes);
+            setStringCount(tab.stringCount);
+          }
         } else {
           throw new Error("No Guitar Pro file stored for this song.");
         }
@@ -191,33 +208,24 @@ export function SyncDebugView({ songId }: { songId: string }) {
     };
   }, [timeline, buffer, syncSettings, syncVersion]);
 
-  // --- markers -----------------------------------------------------------------
+  // --- bar / beat grid -------------------------------------------------------
   const markers = useMemo<Marker[]>(() => {
     if (!timeline || !syncMap) return [];
-    if (markerSource === "syncMap") {
-      return syncMap.points.map((p, i) => ({
-        label: `p${i}`,
-        scoreTimeSec: p.scoreTime,
-        audioTimeSec: p.audioTime,
-        isDownbeat: true,
-      }));
-    }
-    if (markerSource === "beats") {
-      const downbeats = new Set(timeline.bars.map((b) => b.scoreTimeSec.toFixed(3)));
-      return timeline.beatSec.map((s, i) => ({
-        label: downbeats.has(s.toFixed(3)) ? `${i}` : "",
+    const downbeats = new Set(timeline.bars.map((b) => b.scoreTimeSec.toFixed(3)));
+    const barNumber = new Map(
+      timeline.bars.map((b) => [b.scoreTimeSec.toFixed(3), `${b.barIndex + 1}`]),
+    );
+    return timeline.beatSec.map((s) => {
+      const key = s.toFixed(3);
+      const isDownbeat = downbeats.has(key);
+      return {
+        label: isDownbeat ? (barNumber.get(key) ?? "") : "",
         scoreTimeSec: s,
         audioTimeSec: syncMap.scoreTimeToAudioTime(s),
-        isDownbeat: downbeats.has(s.toFixed(3)),
-      }));
-    }
-    return timeline.bars.map((b) => ({
-      label: `${b.barIndex + 1}`,
-      scoreTimeSec: b.scoreTimeSec,
-      audioTimeSec: syncMap.scoreTimeToAudioTime(b.scoreTimeSec),
-      isDownbeat: true,
-    }));
-  }, [timeline, syncMap, markerSource]);
+        isDownbeat,
+      };
+    });
+  }, [timeline, syncMap]);
 
   // --- click overlay --------------------------------------------------------
   useEffect(() => {
@@ -255,7 +263,7 @@ export function SyncDebugView({ songId }: { songId: string }) {
     }, 20);
   }, [buffer, markers]);
 
-  useEffect(() => setHits(null), [markerSource, syncMap]);
+  useEffect(() => setHits(null), [syncMap]);
 
   // --- peaks + base render -------------------------------------------------
   const peaks = useMemo<Peaks | null>(() => {
@@ -264,21 +272,38 @@ export function SyncDebugView({ songId }: { songId: string }) {
     return computePeaks(buffer, Math.min(width, 200_000));
   }, [buffer, pxPerSec]);
 
-  const onsetHist = useMemo<OnsetHistogram | null>(() => {
-    if (!buffer || !peaks) return null;
-    if (!envRef.current) envRef.current = onsetEnvelope(buffer);
-    return computeOnsetHistogram(
-      envRef.current,
-      peaks.bucketCount,
-      buffer.duration,
-    );
-  }, [buffer, peaks]);
-
   const suspectRegions = useMemo(() => {
     const raw = syncSettings?.syncMap?.diagnostics?.suspectRegions;
     if (!Array.isArray(raw) || !syncMap) return [];
     return raw as Array<{ scoreStart: number; scoreEnd: number; reason: string }>;
   }, [syncSettings, syncMap]);
+
+  /**
+   * Where the built map *actually* sends each anchor's score time. A sync map has
+   * to be monotonic, so an anchor that would make audio time run backwards
+   * relative to its neighbours gets flattened away by `SyncMap.fromPoints`. It
+   * still sits in the list looking authoritative, which reads as "the debugger
+   * ignored my edit" — so surface it instead.
+   */
+  const appliedAudioTimes = useMemo(() => {
+    const m = new Map<number, number>();
+    if (!syncMap) return m;
+    for (const a of anchors) {
+      m.set(a.scoreTime, syncMap.scoreTimeToAudioTime(a.scoreTime));
+    }
+    return m;
+  }, [syncMap, anchors]);
+
+  const unappliedAnchors = useMemo(() => {
+    const s = new Set<number>();
+    for (const a of anchors) {
+      const got = appliedAudioTimes.get(a.scoreTime);
+      if (got != null && Math.abs(got - a.audioTime) > ANCHOR_TOLERANCE_SEC) {
+        s.add(a.scoreTime);
+      }
+    }
+    return s;
+  }, [anchors, appliedAudioTimes]);
 
   const liveErrorMs = useMemo(() => {
     if (!syncMap || !timeline) return null;
@@ -296,142 +321,40 @@ export function SyncDebugView({ songId }: { songId: string }) {
       baseCanvasRef.current = base;
     }
     base.width = width;
-    base.height = CANVAS_H;
+    base.height = layout.total;
     const g = base.getContext("2d");
     if (!g) return;
-    g.fillStyle = "#0f1115";
-    g.fillRect(0, 0, width, CANVAS_H);
 
-    // suspect regions (red tint on waveform)
-    if (syncMap && suspectRegions.length) {
-      g.fillStyle = "rgba(248,113,113,0.12)";
-      for (const r of suspectRegions) {
-        const x0 = syncMap.scoreTimeToAudioTime(r.scoreStart) * pxPerSec;
-        const x1 = syncMap.scoreTimeToAudioTime(r.scoreEnd) * pxPerSec;
-        g.fillRect(x0, 0, x1 - x0, WAVE_H);
-      }
-    }
-
-    // waveform
-    const mid = WAVE_H / 2;
-    g.strokeStyle = "#3f5f46";
-    g.beginPath();
-    for (let b = 0; b < peaks.bucketCount; b++) {
-      const x = (b / peaks.bucketCount) * width;
-      g.moveTo(x, mid - peaks.minMax[b * 2 + 1] * mid * 0.94);
-      g.lineTo(x, mid - peaks.minMax[b * 2] * mid * 0.94);
-    }
-    g.stroke();
-
-    // beat markers (thin) — only when beats selected
-    if (markerSource === "beats") {
-      g.strokeStyle = "rgba(148,163,184,0.25)";
-      g.beginPath();
-      for (const m of markers) {
-        if (m.isDownbeat) continue;
-        const x = m.audioTimeSec * pxPerSec;
-        g.moveTo(x, 12);
-        g.lineTo(x, WAVE_H - 12);
-      }
-      g.stroke();
-    }
-
-    // downbeat / bar / point markers
-    g.font = "10px ui-monospace, monospace";
-    for (const m of markers) {
-      if (!m.isDownbeat) continue;
-      const x = m.audioTimeSec * pxPerSec;
-      g.strokeStyle = "rgba(74,222,128,0.9)";
-      g.beginPath();
-      g.moveTo(x, 0);
-      g.lineTo(x, WAVE_H);
-      g.stroke();
-      if (m.label) {
-        g.fillStyle = "rgba(74,222,128,0.9)";
-        g.fillText(m.label, x + 2, 11);
-      }
-    }
-
-    // manual anchor markers (blue)
-    for (const a of anchors) {
-      const x = a.audioTime * pxPerSec;
-      g.strokeStyle = "rgba(96,165,250,0.95)";
-      g.lineWidth = 2;
-      g.beginPath();
-      g.moveTo(x, 0);
-      g.lineTo(x, WAVE_H);
-      g.stroke();
-      g.lineWidth = 1;
-      g.fillStyle = "#60a5fa";
-      g.beginPath();
-      g.moveTo(x, 6);
-      g.lineTo(x - 5, 16);
-      g.lineTo(x + 5, 16);
-      g.closePath();
-      g.fill();
-    }
-
-    // selected beat highlight
-    if (selectedScoreTime != null && syncMap) {
-      const x = syncMap.scoreTimeToAudioTime(selectedScoreTime) * pxPerSec;
-      g.strokeStyle = "rgba(250,204,21,0.8)";
-      g.setLineDash([4, 3]);
-      g.beginPath();
-      g.moveTo(x, 0);
-      g.lineTo(x, WAVE_H);
-      g.stroke();
-      g.setLineDash([]);
-    }
-
-    // residual ticks (above histogram)
-    if (hits) {
-      const downbeats = markers.filter((m) => m.isDownbeat);
-      hits.forEach((h, i) => {
-        const m = downbeats[i];
-        if (!m || !h.found) return;
-        const px = m.audioTimeSec * pxPerSec;
-        const ox = h.onsetSec * pxPerSec;
-        const c = residualColour(Math.abs(h.residualSec * 1000));
-        g.strokeStyle = c;
-        g.lineWidth = 2;
-        g.beginPath();
-        g.moveTo(px, WAVE_H - 6);
-        g.lineTo(ox, WAVE_H - 20);
-        g.stroke();
-        g.lineWidth = 1;
-        g.fillStyle = c;
-        g.beginPath();
-        g.arc(ox, WAVE_H - 20, 2.5, 0, Math.PI * 2);
-        g.fill();
-      });
-    }
-
-    // histogram row
-    g.fillStyle = "#0a0c0f";
-    g.fillRect(0, WAVE_H, width, HIST_H);
-    g.strokeStyle = "rgba(255,255,255,0.06)";
-    g.beginPath();
-    g.moveTo(0, WAVE_H);
-    g.lineTo(width, WAVE_H);
-    g.stroke();
-    if (onsetHist) {
-      g.save();
-      g.translate(0, WAVE_H);
-      drawOnsetHistogram(g, onsetHist, width, HIST_H);
-      g.restore();
-    }
+    drawAlignmentStack(g, {
+      width,
+      pxPerSec,
+      layout,
+      peaks,
+      syncMap,
+      anchors,
+      notes: scoreNotes,
+      markers,
+      selectedScoreTime,
+      suspectRegions,
+      hits,
+      unappliedAnchors,
+      dragAnchorScoreTime: dragAnchor?.scoreTime ?? null,
+      dragAudioTime: dragAnchor?.audioTime ?? null,
+    });
   }, [
     peaks,
     buffer,
     pxPerSec,
+    layout,
     markers,
     hits,
-    markerSource,
     anchors,
     suspectRegions,
     syncMap,
-    onsetHist,
     selectedScoreTime,
+    scoreNotes,
+    dragAnchor,
+    unappliedAnchors,
   ]);
 
   useEffect(() => {
@@ -464,7 +387,7 @@ export function SyncDebugView({ songId }: { songId: string }) {
           g.lineWidth = 1.5;
           g.beginPath();
           g.moveTo(x, 0);
-          g.lineTo(x, CANVAS_H);
+          g.lineTo(x, base.height);
           g.stroke();
           g.lineWidth = 1;
         }
@@ -503,56 +426,98 @@ export function SyncDebugView({ songId }: { songId: string }) {
     setPlaying(false);
     setPosSec(0);
   };
-  const seekToClientX = (clientX: number, e?: React.MouseEvent) => {
+  const dragMovedRef = useRef(false);
+
+  const pointerToAudio = (clientX: number, clientY: number) => {
     const sc = scrollRef.current;
-    if (!sc || !sessionRef.current) return;
+    const canvas = canvasRef.current;
+    if (!sc || !canvas) return null;
     const rect = sc.getBoundingClientRect();
     const x = clientX - rect.left + sc.scrollLeft;
-    const audioTime = x / pxPerSec;
+    const y = clientY - rect.top;
+    return {
+      audioTime: x / pxPerSec,
+      region: hitAlignmentRegion(y, layout),
+    };
+  };
 
-    const inHistogram = e
-      ? (() => {
-          const canvas = canvasRef.current;
-          if (!canvas) return false;
-          const cr = canvas.getBoundingClientRect();
-          return e.clientY - cr.top > WAVE_H;
-        })()
-      : false;
+  const handleCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    dragMovedRef.current = false;
+    const hit = pointerToAudio(e.clientX, e.clientY);
+    if (!hit || !syncMap) return;
 
-    if (inHistogram && onsetHist) {
-      const peak = nearestPeakSec(onsetHist, audioTime, 0.2);
-      const target = peak ?? audioTime;
-      if (e?.shiftKey && selectedScoreTime != null) {
-        upsertSyncAnchor(songId, {
-          scoreTime: selectedScoreTime,
-          audioTime: target,
-          label: `bar @ ${selectedScoreTime.toFixed(2)}s`,
-        });
-        setSyncVersion((v) => v + 1);
-      } else {
-        sessionRef.current.seek(target);
-        setPosSec(target);
+    if (hit.region === "anchor") {
+      const anchor = hitAnchor(anchors, hit.audioTime, pxPerSec);
+      if (anchor) {
+        setDragAnchor({ scoreTime: anchor.scoreTime, audioTime: anchor.audioTime });
+        (e.target as HTMLCanvasElement).setPointerCapture(e.pointerId);
       }
       return;
     }
 
-    if (e?.shiftKey && selectedScoreTime != null) {
-      let audio = audioTime;
+    if (hit.region === "tab") {
+      setSelectedScoreTime(
+        hitScoreEvent(scoreNotes, markers, syncMap, hit.audioTime, pxPerSec),
+      );
+    }
+  };
+
+  const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!dragAnchor) return;
+    dragMovedRef.current = true;
+    const hit = pointerToAudio(e.clientX, e.clientY);
+    if (!hit) return;
+    let audio = hit.audioTime;
+    if (envRef.current) {
+      const snap = nearestOnset(envRef.current, audio, 0.08);
+      if (snap.found && snap.strength > 0.3) audio = snap.onsetSec;
+    }
+    setDragAnchor({ ...dragAnchor, audioTime: Math.max(0, audio) });
+  };
+
+  const handleCanvasPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (dragAnchor) {
+      upsertSyncAnchor(songId, {
+        scoreTime: dragAnchor.scoreTime,
+        audioTime: dragAnchor.audioTime,
+        label: `anchor @ ${fmt(dragAnchor.scoreTime)}`,
+      });
+      setSyncVersion((v) => v + 1);
+      setDragAnchor(null);
+      (e.target as HTMLCanvasElement).releasePointerCapture(e.pointerId);
+    }
+  };
+
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (dragMovedRef.current) {
+      dragMovedRef.current = false;
+      return;
+    }
+    const hit = pointerToAudio(e.clientX, e.clientY);
+    if (!hit || !sessionRef.current) return;
+
+    // The tab row selects; pointerDown already handled it.
+    if (hit.region === "tab") return;
+
+    // Shift+click in the waveform anchors the selected note to that attack.
+    if (e.shiftKey && selectedScoreTime != null && hit.region === "wave") {
+      let audio = hit.audioTime;
+      if (!envRef.current && buffer) envRef.current = onsetEnvelope(buffer);
       if (envRef.current) {
-        const hit = nearestOnset(envRef.current, audioTime, 0.35);
-        if (hit.found) audio = hit.onsetSec;
+        const snap = nearestOnset(envRef.current, audio, 0.25);
+        if (snap.found) audio = snap.onsetSec;
       }
       upsertSyncAnchor(songId, {
         scoreTime: selectedScoreTime,
         audioTime: audio,
-        label: `bar @ ${selectedScoreTime.toFixed(2)}s`,
+        label: `anchor @ ${fmt(selectedScoreTime)}`,
       });
       setSyncVersion((v) => v + 1);
       return;
     }
 
-    sessionRef.current.seek(audioTime);
-    setPosSec(audioTime);
+    sessionRef.current.seek(hit.audioTime);
+    setPosSec(hit.audioTime);
   };
 
   const stats = hits ? summariseResiduals(hits) : null;
@@ -570,46 +535,43 @@ export function SyncDebugView({ songId }: { songId: string }) {
   const width = buffer ? Math.ceil(buffer.duration * pxPerSec) : 0;
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-start justify-between">
-        <div>
-          <Link
-            href={`/player/${songId}`}
-            className="inline-flex items-center gap-1 text-xs text-zinc-400 hover:text-zinc-200"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Player
-          </Link>
-          <h1 className="mt-1 text-lg font-semibold">
-            Sync debug{song ? ` · ${song.title}` : ""}
+    <div className="flex flex-col gap-3">
+      <div>
+        <Link
+          href={`/player/${songId}`}
+          className="inline-flex items-center gap-1 text-xs text-zinc-400 hover:text-zinc-200"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Player
+        </Link>
+        <div className="mt-1 flex flex-wrap items-baseline gap-x-3">
+          <h1 className="text-lg font-semibold">
+            Sync{song ? ` · ${song.title}` : ""}
           </h1>
-          <p className="text-sm text-zinc-400">
-            GP markers vs recording waveform. Method:{" "}
-            <span className="text-zinc-200">{method}</span>
-            {syncSource === "dtw" && (
-              <span className="ml-2 text-accent">(DTW active)</span>
-            )}
-            {syncMap && ` · ${syncMap.points.length} sync points`}
-            {liveErrorMs != null && (
-              <span
-                className={cn(
-                  "ml-2 tabular-nums",
-                  Math.abs(liveErrorMs) < 40
-                    ? "text-accent"
-                    : Math.abs(liveErrorMs) < 100
-                      ? "text-amber-400"
-                      : "text-red-400",
-                )}
-              >
-                Error: {liveErrorMs >= 0 ? "+" : ""}
-                {liveErrorMs.toFixed(0)} ms
-              </span>
-            )}
-          </p>
-          {syncWarning && (
-            <p className="mt-1 text-[11px] text-amber-300">{syncWarning}</p>
+          <span className="text-xs text-zinc-500">
+            {method}
+            {syncSource === "dtw" && " (DTW)"}
+            {syncMap && ` · ${syncMap.points.length} points`}
+          </span>
+          {liveErrorMs != null && (
+            <span
+              className={cn(
+                "text-xs tabular-nums",
+                Math.abs(liveErrorMs) < 40
+                  ? "text-accent"
+                  : Math.abs(liveErrorMs) < 100
+                    ? "text-amber-400"
+                    : "text-red-400",
+              )}
+            >
+              {liveErrorMs >= 0 ? "+" : ""}
+              {liveErrorMs.toFixed(0)} ms
+            </span>
           )}
         </div>
+        {syncWarning && (
+          <p className="mt-1 text-[11px] text-amber-300">{syncWarning}</p>
+        )}
       </div>
 
       {loadError && (
@@ -627,8 +589,8 @@ export function SyncDebugView({ songId }: { songId: string }) {
         )
       ) : (
         <>
-          {/* controls */}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-white/5 bg-surface-raised px-4 py-3 text-xs text-zinc-400">
+          {/* transport */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-white/5 bg-surface-raised px-4 py-2.5 text-xs text-zinc-400">
             <Button size="icon" aria-label={playing ? "Pause" : "Play"} onClick={togglePlay}>
               {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
             </Button>
@@ -651,7 +613,6 @@ export function SyncDebugView({ songId }: { songId: string }) {
                 className="w-28 accent-accent"
                 aria-label="Zoom px per second"
               />
-              <span className="w-10 tabular-nums">{pxPerSec}px/s</span>
             </label>
 
             <label className="flex items-center gap-1">
@@ -680,18 +641,6 @@ export function SyncDebugView({ songId }: { songId: string }) {
             </label>
 
             <label className="flex items-center gap-1">
-              Markers
-              <Select
-                value={markerSource}
-                onChange={(e) => setMarkerSource(e.target.value as MarkerSource)}
-              >
-                <option value="bars">Score bars</option>
-                <option value="beats">Score beats</option>
-                <option value="syncMap">Sync-map points</option>
-              </Select>
-            </label>
-
-            <label className="flex items-center gap-1">
               Click
               <Select
                 value={clickMode}
@@ -703,36 +652,15 @@ export function SyncDebugView({ songId }: { songId: string }) {
                 <option value="bars">bars</option>
                 <option value="beats">beats</option>
               </Select>
-              {clickMode !== "off" && (
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  value={clickVol}
-                  onChange={(e) => setClickVol(Number(e.target.value))}
-                  className="w-16 accent-accent"
-                  aria-label="Click volume"
-                />
-              )}
             </label>
-
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={measure}
-              disabled={measuring}
-            >
-              {measuring ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Ruler className="h-3.5 w-3.5" />
-              )}
-              <span className="ml-1">Measure onsets</span>
-            </Button>
           </div>
 
-          {/* waveform */}
+          <p className="text-[11px] text-zinc-500">
+            A fret number should sit directly above the attack it plays. Click a
+            note to select it, then Shift+click its peak in the waveform to
+            anchor. Drag the numbered pins to fine-tune.
+          </p>
+
           <div
             ref={scrollRef}
             className="overflow-x-auto rounded-lg border border-white/5 bg-surface"
@@ -740,10 +668,13 @@ export function SyncDebugView({ songId }: { songId: string }) {
             <canvas
               ref={canvasRef}
               width={width}
-              height={CANVAS_H}
-              style={{ width, height: CANVAS_H, display: "block" }}
-              onClick={(e) => seekToClientX(e.clientX, e)}
-              className="cursor-crosshair"
+              height={layout.total}
+              style={{ width, height: layout.total, display: "block" }}
+              onClick={handleCanvasClick}
+              onPointerDown={handleCanvasPointerDown}
+              onPointerMove={handleCanvasPointerMove}
+              onPointerUp={handleCanvasPointerUp}
+              className="cursor-crosshair touch-none"
             />
           </div>
 
@@ -757,113 +688,132 @@ export function SyncDebugView({ songId }: { songId: string }) {
             posSec={posSec}
             onsetEnv={envRef.current}
             selectedScoreTime={selectedScoreTime}
+            appliedAudioTimes={appliedAudioTimes}
             onAnchorsChange={() => setSyncVersion((v) => v + 1)}
-            onSelectScoreTime={setSelectedScoreTime}
           />
 
-          {syncSettings?.syncMap?.diagnostics && (
-            <div className="rounded-lg border border-white/5 bg-surface-raised p-4 text-xs text-zinc-400">
-              <h3 className="mb-2 text-sm font-semibold text-zinc-200">
-                Alignment quality
-              </h3>
-              <dl className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-4">
-                {[
-                  ["residualRmsMs", "RMS residual", "ms", 80],
-                  ["residualMaxMs", "Max residual", "ms", 120],
-                  ["pathStability", "Path stability", "", 0.6],
-                  ["referenceRender", "Reference", "", null],
-                ].map(([key, label, unit, threshold]) => {
-                  const val = syncSettings.syncMap!.diagnostics![key as string];
-                  if (val == null) return null;
-                  const num = typeof val === "number" ? val : null;
-                  const ok =
-                    threshold == null
-                      ? true
-                      : key === "pathStability"
-                        ? num! >= (threshold as number)
-                        : num! < (threshold as number);
-                  return (
-                    <div key={key as string}>
-                      <dt className="text-zinc-500">{label}</dt>
-                      <dd
-                        className={cn(
-                          "tabular-nums",
-                          ok ? "text-accent" : "text-amber-400",
-                        )}
-                      >
-                        {String(val)}
-                        {unit ? ` ${unit}` : ""}
-                      </dd>
-                    </div>
-                  );
-                })}
-              </dl>
-              <p className="mt-2 text-[11px] text-zinc-500">
-                Green = within target (RMS &lt; 80 ms, stability ≥ 0.6). Use
-                manual anchors in suspect regions if live Error stays red.
-              </p>
-            </div>
-          )}
+          <details className="rounded-lg border border-white/5 bg-surface-raised text-xs text-zinc-400">
+            <summary className="cursor-pointer select-none px-4 py-2.5 text-sm font-medium text-zinc-300">
+              Diagnostics
+            </summary>
+            <div className="flex flex-col gap-4 border-t border-white/5 p-4">
+              {syncSettings?.syncMap?.diagnostics && (
+                <dl className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-4">
+                  {(
+                    [
+                      ["residualRmsMs", "RMS residual", "ms", 80],
+                      ["residualMaxMs", "Max residual", "ms", 120],
+                      ["pathStability", "Path stability", "", 0.6],
+                      ["referenceRender", "Reference", "", null],
+                    ] as const
+                  ).map(([key, label, unit, threshold]) => {
+                    const val = syncSettings.syncMap!.diagnostics![key];
+                    if (val == null) return null;
+                    const num = typeof val === "number" ? val : null;
+                    const ok =
+                      threshold == null || num == null
+                        ? true
+                        : key === "pathStability"
+                          ? num >= threshold
+                          : num < threshold;
+                    return (
+                      <div key={key}>
+                        <dt className="text-zinc-500">{label}</dt>
+                        <dd
+                          className={cn(
+                            "tabular-nums",
+                            ok ? "text-accent" : "text-amber-400",
+                          )}
+                        >
+                          {String(val)}
+                          {unit ? ` ${unit}` : ""}
+                        </dd>
+                      </div>
+                    );
+                  })}
+                </dl>
+              )}
 
-          {/* residual report */}
-          {stats && (
-            <div className="flex flex-col gap-3 rounded-lg border border-white/5 bg-surface-raised p-4">
-              <div className="flex flex-wrap gap-4 text-sm">
-                <Stat label="Measured" value={`${stats.measured}/${stats.count}`} />
-                <Stat
-                  label="Mean |err|"
-                  value={`${stats.meanAbsMs} ms`}
-                  tone={stats.meanAbsMs}
-                />
-                <Stat label="Median |err|" value={`${stats.medianAbsMs} ms`} tone={stats.medianAbsMs} />
-                <Stat label="p90 |err|" value={`${stats.p90AbsMs} ms`} tone={stats.p90AbsMs} />
-                <Stat label="Max |err|" value={`${stats.maxAbsMs} ms`} tone={stats.maxAbsMs} />
-                <Stat
-                  label="Mean signed"
-                  value={`${stats.meanSignedMs >= 0 ? "+" : ""}${stats.meanSignedMs} ms`}
-                />
+              <div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={measure}
+                  disabled={measuring}
+                >
+                  {measuring ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Ruler className="h-3.5 w-3.5" />
+                  )}
+                  <span className="ml-1">Measure onsets</span>
+                </Button>
               </div>
 
-              <ResidualScatter hits={hits!} markers={markers} endSec={timeline.endSec} />
+              {stats && (
+                <>
+                  <div className="flex flex-wrap gap-4 text-sm">
+                    <Stat label="Measured" value={`${stats.measured}/${stats.count}`} />
+                    <Stat
+                      label="Mean |err|"
+                      value={`${stats.meanAbsMs} ms`}
+                      tone={stats.meanAbsMs}
+                    />
+                    <Stat
+                      label="Median |err|"
+                      value={`${stats.medianAbsMs} ms`}
+                      tone={stats.medianAbsMs}
+                    />
+                    <Stat label="p90 |err|" value={`${stats.p90AbsMs} ms`} tone={stats.p90AbsMs} />
+                    <Stat label="Max |err|" value={`${stats.maxAbsMs} ms`} tone={stats.maxAbsMs} />
+                    <Stat
+                      label="Mean signed"
+                      value={`${stats.meanSignedMs >= 0 ? "+" : ""}${stats.meanSignedMs} ms`}
+                    />
+                  </div>
 
-              {worst.length > 0 && (
-                <table className="w-full text-left text-xs">
-                  <thead className="text-zinc-500">
-                    <tr>
-                      <th className="py-1 pr-3">Bar</th>
-                      <th className="py-1 pr-3">Score t</th>
-                      <th className="py-1 pr-3">Predicted audio t</th>
-                      <th className="py-1 pr-3">Detected onset</th>
-                      <th className="py-1 pr-3">Residual</th>
-                    </tr>
-                  </thead>
-                  <tbody className="tabular-nums text-zinc-300">
-                    {worst.map(({ h, m }, i) => (
-                      <tr key={i} className="border-t border-white/5">
-                        <td className="py-1 pr-3">{m.label}</td>
-                        <td className="py-1 pr-3">{m.scoreTimeSec.toFixed(3)}s</td>
-                        <td className="py-1 pr-3">{m.audioTimeSec.toFixed(3)}s</td>
-                        <td className="py-1 pr-3">{h.onsetSec.toFixed(3)}s</td>
-                        <td
-                          className="py-1 pr-3 font-medium"
-                          style={{ color: residualColour(Math.abs(h.residualSec * 1000)) }}
-                        >
-                          {h.residualSec >= 0 ? "+" : ""}
-                          {(h.residualSec * 1000).toFixed(0)} ms
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                  <ResidualScatter
+                    hits={hits!}
+                    markers={markers}
+                    endSec={timeline.endSec}
+                  />
+
+                  {worst.length > 0 && (
+                    <table className="w-full text-left text-xs">
+                      <thead className="text-zinc-500">
+                        <tr>
+                          <th className="py-1 pr-3">Bar</th>
+                          <th className="py-1 pr-3">Score t</th>
+                          <th className="py-1 pr-3">Predicted audio t</th>
+                          <th className="py-1 pr-3">Detected onset</th>
+                          <th className="py-1 pr-3">Residual</th>
+                        </tr>
+                      </thead>
+                      <tbody className="tabular-nums text-zinc-300">
+                        {worst.map(({ h, m }, i) => (
+                          <tr key={i} className="border-t border-white/5">
+                            <td className="py-1 pr-3">{m.label}</td>
+                            <td className="py-1 pr-3">{m.scoreTimeSec.toFixed(3)}s</td>
+                            <td className="py-1 pr-3">{m.audioTimeSec.toFixed(3)}s</td>
+                            <td className="py-1 pr-3">{h.onsetSec.toFixed(3)}s</td>
+                            <td
+                              className="py-1 pr-3 font-medium"
+                              style={{
+                                color: residualColour(Math.abs(h.residualSec * 1000)),
+                              }}
+                            >
+                              {h.residualSec >= 0 ? "+" : ""}
+                              {(h.residualSec * 1000).toFixed(0)} ms
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </>
               )}
-              <p className="text-[11px] text-zinc-500">
-                Residual = detected recording onset − predicted marker time.
-                Positive = the recording hits <em>after</em> the marker. Onset
-                detection is energy-flux based; sparse / legato bars may show
-                &ldquo;not measured&rdquo;.
-              </p>
             </div>
-          )}
+          </details>
         </>
       )}
     </div>
