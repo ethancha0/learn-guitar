@@ -288,6 +288,15 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     );
   }, [syncMap, barTimeline, syncSource, anchorScoreTimes]);
 
+  // alphaTab's own score clock for the points it currently holds. Read back so
+  // the offsets can be re-derived against it — see `compensateFlatSyncPoints`.
+  const readGeneratedSyncPoints = useCallback(() => {
+    const score = apiRef.current?.score;
+    const generator = alphaTabRef.current?.midi?.MidiFileGenerator;
+    if (!score || !generator?.generateSyncPoints) return null;
+    return generator.generateSyncPoints(score);
+  }, []);
+
   const { onStateChanged, applySync } = useBackingSync({
     songId,
     apiRef,
@@ -297,6 +306,7 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     trustedAudioDurationSec: audioDurationSec || null,
     playerReady,
     audioMetaReady,
+    getGeneratedSyncPoints: readGeneratedSyncPoints,
   });
 
   const renderTrack = useCallback((index: number) => {

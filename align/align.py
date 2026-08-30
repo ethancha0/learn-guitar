@@ -26,38 +26,40 @@ beat positions), so there is exactly one source of truth for the mapping.
 ## Tuning for fast material
 
 At 170 BPM a sixteenth note is 88 ms, so anything that blurs the timeline by
-~100 ms can slide the alignment a whole subdivision. Two knobs are set away
-from the library defaults, and both were chosen by measurement (`sweep.py`,
-scored by `evaluate.py`) rather than by argument:
+~100 ms can slide the alignment a whole subdivision.
+
+**Exactly one knob is set away from the SyncToolbox defaults**, because it is
+the only one that survived measurement on real music:
 
 * **Feature rate.** `--fast-profile auto` raises it to 100 Hz (10 ms frames)
-  above `FAST_BPM`. On a 170 BPM fixture this halved the residual spread
-  (median 5.3 -> 2.6 ms, p90 11.7 -> 5.7 ms) at no measured runtime cost — the
-  pitch filterbank dominates extraction and runs at the sample rate either way.
-* **`step_weights` / `threshold_rec`** follow SyncToolbox's own
-  `sync_audio_audio` recommendation. With the library default `[1, 1, 1]` a
-  horizontal or vertical step is as cheap as a diagonal, so the path can
-  staircase. Measured neutral on a clean fixture; kept because it is the
-  upstream recommendation and cannot hurt.
+  above `FAST_BPM`. Measured on *Monster* (170 BPM, 144 bars, scored against
+  real onsets by `evaluate.py`): median residual 5.0 -> 3.9 ms, subdivision
+  slips 40 -> 31. Runtime is unchanged, because the pitch filterbank dominates
+  extraction and runs at the sample rate either way.
 
-Two knobs that *look* like they should help at speed are deliberately left at
-the library defaults, because measuring them said otherwise:
+Everything else stays at the library defaults, and the reasons are worth
+recording because several of them are counter-intuitive:
 
-* Shortening the **DLNCO decay** to about one subdivision (the default smears
-  each onset over 10 frames = 200 ms at 50 Hz) made results slightly worse on
-  every fixture tried, and clearly worse with a weak reference render.
-* Lowering **`alpha`** to weight onsets over chroma was the most harmful single
-  change measured (median 13.7 -> 25.3 ms, 0 -> 5 subdivision slips, on a
-  sine-fallback reference).
+* **`step_weights=(1.5, 1.5, 2.0)` and `threshold_rec=1e6`** are what
+  SyncToolbox's own `sync_audio_audio` demo uses, and an earlier revision of
+  this file adopted them. On a clean synthetic fixture they measured neutral.
+  On real music they are **clearly harmful** — worse in all eight pairings
+  tried, e.g. 3.9 -> 13.8 ms median for the step weights and 3.9 -> 15.4 ms for
+  the threshold. Do not re-adopt them without re-measuring.
+* Shortening the **DLNCO decay** to about one subdivision, and lowering
+  **`alpha`** to weight onsets over chroma, both measured neutral-to-harmful.
 
-Both remain flags so `sweep.py` can revisit them on dense polyphonic material,
-which is the case the original reasoning was about and which a sparse fixture
-does not exercise.
+All remain flags so `sweep.py` can revisit them per song.
 
-**The dominant factor is none of the above — it is the reference render.**
-Holding everything else constant, swapping the drumless, transient-free
-`pretty_midi` fallback for a percussive render took the median residual from
-25.3 ms to 6.2 ms and subdivision slips from 5 to 1. Use a soundfont.
+**On the reference render.** The `pretty_midi` fallback renders drum tracks as
+silence and has no attack transients, so for a percussive arrangement a
+soundfont should win by a wide margin. But it is not automatic: on *Monster* —
+which has **no drum track**, only sustained pitched instruments — a full GM
+soundfont measured *worse* than the sine fallback (median 7.3 vs 3.9 ms, 85 vs
+31 slips), because General MIDI sax and brass patches have slow attacks and the
+sine render's instantaneous ones localise better. What alignment wants is
+attack sharpness, not timbral realism. Check `evaluate.py` both ways per song
+rather than assuming.
 
 Writes a JSON document (see align/schema.json). On any hard failure it still
 writes JSON with "status":"failed" and a message, and exits non-zero.
@@ -83,10 +85,12 @@ FAST_FEATURE_RATE = 100
 FAST_BPM = 140
 #: SyncToolbox's DLNCO decay length, in frames.
 DEFAULT_DLNCO_DECAY = 10
-#: SyncToolbox's recommended step weights (its own demo notebook), not the
-#: library defaults — see the module docstring.
-DEFAULT_STEP_WEIGHTS = (1.5, 1.5, 2.0)
-DEFAULT_THRESHOLD_REC = 10 ** 6
+#: SyncToolbox library defaults. Its `sync_audio_audio` demo suggests
+#: (1.5, 1.5, 2.0) with threshold_rec 1e6, and an earlier revision of this file
+#: adopted that pair — but measured on real material both were clearly harmful
+#: (see the module docstring), so we stay on the library values.
+DEFAULT_STEP_WEIGHTS = (1.0, 1.0, 1.0)
+DEFAULT_THRESHOLD_REC = 10000
 
 _ALIGN_DIR = str(Path(__file__).resolve().parent)
 if _ALIGN_DIR not in sys.path:

@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   SyncMap,
   SyncMapError,
+  compensateFlatSyncPoints,
   toAlphaTabBarSyncPoints,
   toAlphaTabFlatSyncPoints,
+  type GeneratedSyncPoint,
   type SyncPoint,
 } from "./syncMap";
 
@@ -780,5 +782,84 @@ describe("beat-level sync points", () => {
       beatSec: huge,
     });
     expect(points).toHaveLength(5);
+  });
+});
+
+describe("compensateFlatSyncPoints", () => {
+  // 2 bars of 4/4 at 60 BPM. alphaTab banks whole milliseconds only, so its
+  // score clock falls behind the true beat times a little more with each point.
+  const timeline = {
+    bars: [
+      { barIndex: 0, startSec: 0, occurence: 0 },
+      { barIndex: 1, startSec: 4, occurence: 0 },
+    ],
+    endSec: 8,
+    beatSec: [0, 1, 2, 3, 4, 5, 6, 7],
+  };
+  const map = SyncMap.fromPoints([
+    { scoreTime: 0, audioTime: 0.5 },
+    { scoreTime: 8, audioTime: 8.5 },
+  ]);
+
+  /** alphaTab's clock, losing 2 ms per point. */
+  const generatedFor = (points: readonly { barIndex: number; barOccurence: number }[]) =>
+    points.map((p, i) => ({
+      masterBarIndex: p.barIndex,
+      masterBarOccurence: p.barOccurence,
+      synthTick: i * 960,
+      synthTime: i * 1000 - i * 2,
+    }));
+
+  it("re-derives each offset from the score time alphaTab believes it has", () => {
+    const points = toAlphaTabBarSyncPoints(map, timeline);
+    const out = compensateFlatSyncPoints(points, generatedFor(points), map);
+
+    // Point 4 sits on score 4 s, but alphaTab has only banked 3.992 s there, so
+    // its offset must be the curve read at 3.992 s — 8 ms earlier than before.
+    expect(points[4].millisecondOffset).toBe(4500);
+    expect(out[4].millisecondOffset).toBe(4492);
+    // Bars and positions are untouched; only the audio side moves.
+    expect(out[4].barIndex).toBe(points[4].barIndex);
+    expect(out[4].barPosition).toBe(points[4].barPosition);
+  });
+
+  it("matches generated points per bar and occurrence, in order", () => {
+    const repeats = {
+      bars: [
+        { barIndex: 0, startSec: 0, occurence: 0 },
+        { barIndex: 0, startSec: 4, occurence: 1 },
+      ],
+      endSec: 8,
+      beatSec: [0, 2, 4, 6],
+    };
+    const points = toAlphaTabBarSyncPoints(map, repeats);
+    const generated: GeneratedSyncPoint[] = points.map((p, i) => ({
+      masterBarIndex: p.barIndex,
+      masterBarOccurence: p.barOccurence,
+      // Deliberately out of order: the function sorts by tick before matching.
+      synthTick: (points.length - i) * 100,
+      synthTime: 0,
+    }));
+    const out = compensateFlatSyncPoints(points, generated, map);
+
+    for (const p of out) {
+      expect(p.millisecondOffset).toBe(500); // every synthTime is 0 → curve at 0
+    }
+    const firstPass = out.filter((p) => p.barOccurence === 0);
+    const secondPass = out.filter((p) => p.barOccurence === 1);
+    expect(firstPass.length).toBeGreaterThan(0);
+    expect(secondPass.length).toBeGreaterThan(0);
+  });
+
+  it("leaves points alone when alphaTab reported nothing", () => {
+    const points = toAlphaTabBarSyncPoints(map, timeline);
+    expect(compensateFlatSyncPoints(points, [], map)).toEqual(points);
+  });
+
+  it("keeps a point whose generated counterpart is missing", () => {
+    const points = toAlphaTabBarSyncPoints(map, timeline);
+    const partial = generatedFor(points).slice(0, 2);
+    const out = compensateFlatSyncPoints(points, partial, map);
+    expect(out[5]).toEqual(points[5]);
   });
 });

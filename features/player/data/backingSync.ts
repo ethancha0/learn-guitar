@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { SyncMap, AlphaTabFlatSyncPoint } from "./syncMap";
+import type {
+  SyncMap,
+  AlphaTabFlatSyncPoint,
+  GeneratedSyncPoint,
+} from "./syncMap";
+import { compensateFlatSyncPoints } from "./syncMap";
 
 /**
  * Couples an imported mp3 to alphaTab using `PlayerMode.EnabledExternalMedia`:
@@ -27,6 +32,13 @@ interface BackingSyncDeps {
   getSyncMap: () => SyncMap | null;
   /** alphaTab points derived from the map by the caller. */
   getFlatSyncPoints: () => AlphaTabFlatSyncPoint[] | null;
+  /**
+   * `MidiFileGenerator.generateSyncPoints(score)` for the currently applied
+   * points, used to cancel alphaTab's millisecond truncation
+   * (`compensateFlatSyncPoints`). Optional: without it playback still works,
+   * it just drifts.
+   */
+  getGeneratedSyncPoints?: () => GeneratedSyncPoint[] | null;
   /**
    * Recording length in seconds that alphaTab should anchor its final segment
    * to. `<audio>.duration` is unreliable for VBR MP3s served from blob URLs
@@ -114,13 +126,23 @@ export class BackingMediaSync {
 
     try {
       score.applyFlatSyncPoints(points);
+      // A second pass with the offsets re-derived from alphaTab's own score
+      // clock. See `compensateFlatSyncPoints`: without it the cursor loses
+      // ~0.94 ms per beat, which is half a second by the end of a fast song.
+      const map = this.deps.getSyncMap();
+      const generated = this.deps.getGeneratedSyncPoints?.() ?? null;
+      const applied =
+        map && generated?.length
+          ? compensateFlatSyncPoints(points, generated, map)
+          : points;
+      if (applied !== points) score.applyFlatSyncPoints(applied);
       api.updateSyncPoints();
-      this.appliedPoints = points;
+      this.appliedPoints = applied;
+      return applied;
     } catch (err) {
       console.error("[backingSync] applySync failed", err);
       return [];
     }
-    return points;
   }
 
   /** What was last handed to alphaTab — for the diagnostics view. */
@@ -232,6 +254,8 @@ interface UseBackingSyncArgs {
   trustedAudioDurationSec: number | null;
   playerReady: boolean;
   audioMetaReady: boolean;
+  /** See `BackingSyncDeps.getGeneratedSyncPoints`. */
+  getGeneratedSyncPoints?: () => GeneratedSyncPoint[] | null;
 }
 
 /**
@@ -248,14 +272,17 @@ export function useBackingSync({
   trustedAudioDurationSec,
   playerReady,
   audioMetaReady,
+  getGeneratedSyncPoints,
 }: UseBackingSyncArgs) {
   const controllerRef = useRef<BackingMediaSync | null>(null);
   const mapRef = useRef(syncMap);
   const flatRef = useRef(flatSyncPoints);
   const durRef = useRef(trustedAudioDurationSec);
+  const generatedRef = useRef(getGeneratedSyncPoints);
   mapRef.current = syncMap;
   flatRef.current = flatSyncPoints;
   durRef.current = trustedAudioDurationSec;
+  generatedRef.current = getGeneratedSyncPoints;
 
   // One controller per song.
   useEffect(() => {
@@ -265,6 +292,7 @@ export function useBackingSync({
       getSyncMap: () => mapRef.current,
       getFlatSyncPoints: () => flatRef.current,
       getTrustedAudioDurationSec: () => durRef.current,
+      getGeneratedSyncPoints: () => generatedRef.current?.() ?? null,
     });
     controllerRef.current = controller;
     return () => {
