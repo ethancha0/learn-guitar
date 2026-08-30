@@ -29,18 +29,27 @@ import {
 } from "@/features/player/data/backingSync";
 import {
   SyncMap,
+  toAlphaTabBarSyncPoints,
   toAlphaTabFlatSyncPoints,
   type BarTimeline,
 } from "@/features/player/data/syncMap";
+import { buildPlaybackSyncMap } from "@/features/player/data/buildSyncMap";
 import { extractScoreTimeline } from "@/features/player/data/scoreTimeline";
 import {
   OffsetSyncGenerator,
   DtwSyncGenerator,
 } from "@/features/player/data/syncGenerator";
 import { installSyncDebug } from "@/features/player/data/syncDebug";
+import { verifySyncTransfer } from "@/features/player/data/syncVerify";
+import {
+  TrackSynth,
+  extractTrackNotes,
+  type SynthNote,
+} from "@/features/player/data/trackSynth";
 import { Mixer, type MixerTrack } from "./Mixer";
 import { AudioOffsetControl } from "./AudioOffsetControl";
 import { BackingVolumeControl } from "./BackingVolumeControl";
+import { SynthVolumeControl } from "./SynthVolumeControl";
 import { SyncDiagnostics } from "./SyncDiagnostics";
 
 const IS_DEV = process.env.NODE_ENV !== "production";
@@ -127,6 +136,13 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   const [storedSyncMap, setStoredSyncMap] = useState<StoredSyncMap | null>(null);
   const [audioDurationSec, setAudioDurationSec] = useState(0);
   const [barTimeline, setBarTimeline] = useState<BarTimeline | null>(null);
+
+  // Synthesized reference tone for the displayed track (see trackSynth.ts).
+  const [synthVol, setSynthVol] = useState(0.6);
+  const [synthMuted, setSynthMuted] = useState(false);
+  const [synthNoteCount, setSynthNoteCount] = useState(0);
+  const synthRef = useRef<TrackSynth | null>(null);
+  const synthPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [autoAligning, setAutoAligning] = useState(false);
   const [dtwRunning, setDtwRunning] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | undefined>();
@@ -143,57 +159,22 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
    * alignment (previously a stored map that failed validation fell back to a
    * straight line with no indication).
    */
-  const { syncMap, syncSource, syncWarning } = useMemo((): {
-    syncMap: SyncMap | null;
-    syncSource: "dtw" | "offset" | "none";
-    syncWarning?: string;
-  } => {
-    let warning: string | undefined;
-
-    if (storedSyncMap && storedSyncMap.points.length >= 2) {
-      try {
-        let map = SyncMap.fromPoints(storedSyncMap.points, {
-          method: storedSyncMap.method,
-          ...(storedSyncMap.diagnostics ?? {}),
-        });
-        if (storedSyncMap.anchors?.length) {
-          map = map.withAnchors(storedSyncMap.anchors);
-        }
-        // Bound the tail so alphaTab can't stretch the last segment to a
-        // possibly-wrong media duration. See `withTerminalAnchor`.
-        if (scoreDurationSec > 0) {
-          map = map.withTerminalAnchor(
-            scoreDurationSec,
-            audioDurationSec || undefined,
-          );
-        }
-        // Feed alphaTab the shape of the curve, not every DTW frame.
-        return { syncMap: map.simplify(0.02), syncSource: "dtw" };
-      } catch (err) {
-        warning = `Stored sync map was rejected (${(err as Error).message}); using the linear offset fallback.`;
-      }
-    }
-
-    if (scoreDurationSec > 0 || audioDurationSec > 0) {
-      let map = SyncMap.fromOffset(
-        offsetMs / 1000,
-        scoreDurationSec || Math.max(audioDurationSec - offsetMs / 1000, 1),
-        audioDurationSec,
-      );
-      if (storedSyncMap?.anchors?.length) {
-        map = map.withAnchors(storedSyncMap.anchors);
-      }
-      return { syncMap: map, syncSource: "offset", syncWarning: warning };
-    }
-    return { syncMap: null, syncSource: "none", syncWarning: warning };
+  const { syncMap, syncSource, syncWarning } = useMemo(() => {
+    return buildPlaybackSyncMap({
+      stored: storedSyncMap,
+      offsetMs,
+      scoreEndSec: scoreDurationSec,
+      audioDurationSec,
+    });
   }, [storedSyncMap, offsetMs, scoreDurationSec, audioDurationSec]);
 
-  // alphaTab points are derived from the map here, so the curve the cursor
-  // follows is provably the one the clock/scoring use.
   const flatSyncPoints = useMemo(() => {
     if (!syncMap || !barTimeline) return null;
-    return toAlphaTabFlatSyncPoints(syncMap, barTimeline);
-  }, [syncMap, barTimeline]);
+    if (syncSource === "dtw") {
+      return toAlphaTabBarSyncPoints(syncMap, barTimeline);
+    }
+    return toAlphaTabFlatSyncPoints(syncMap.simplify(0.02), barTimeline);
+  }, [syncMap, barTimeline, syncSource]);
 
   const { onStateChanged, applySync } = useBackingSync({
     songId,
@@ -369,6 +350,8 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
       if (typeof sync.backingVol === "number") setBackingVol(sync.backingVol);
       if (typeof sync.backingMuted === "boolean")
         setBackingMuted(sync.backingMuted);
+      if (typeof sync.synthVol === "number") setSynthVol(sync.synthVol);
+      if (typeof sync.synthMuted === "boolean") setSynthMuted(sync.synthMuted);
     }
 
     getBackingAudio(songId).then((blob) => {
@@ -419,6 +402,82 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   useEffect(() => {
     scrubbingRef.current = scrubbing;
   }, [scrubbing]);
+
+  // --- synthesized reference tone -------------------------------------------
+
+  // One synth for the life of the player.
+  useEffect(() => {
+    const Ctx: typeof AudioContext =
+      window.AudioContext ??
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).webkitAudioContext;
+    if (!Ctx) return;
+    const synth = new TrackSynth(new Ctx());
+    synthRef.current = synth;
+    if (IS_DEV) {
+      // Debug handles: the live instance, plus the class so the engine can be
+      // rendered offline (see docs/sync-audit-2.md "verifying the synth").
+      const w = window as unknown as { __trackSynth?: unknown; __TrackSynth?: unknown };
+      w.__trackSynth = synth;
+      w.__TrackSynth = TrackSynth;
+    }
+    return () => {
+      synth.dispose();
+      synthRef.current = null;
+    };
+  }, []);
+
+  // Notes follow whichever track is on screen.
+  useEffect(() => {
+    let cancelled = false;
+    extractTrackNotes(base64ToBytes(tabData), selectedTrack)
+      .then((notes: SynthNote[]) => {
+        if (cancelled) return;
+        synthRef.current?.setNotes(notes);
+        setSynthNoteCount(notes.length);
+      })
+      .catch((err) => {
+        console.error("[AlphaTabPlayer] track notes failed", err);
+        if (!cancelled) setSynthNoteCount(0);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tabData, selectedTrack]);
+
+  // The synth is positioned by the same mapping as the cursor.
+  useEffect(() => {
+    synthRef.current?.setSyncMap(syncMap);
+  }, [syncMap]);
+
+  useEffect(() => {
+    synthRef.current?.setVolume(synthMuted ? 0 : synthVol);
+    if (synthPersistTimer.current) clearTimeout(synthPersistTimer.current);
+    synthPersistTimer.current = setTimeout(() => {
+      patchAudioSync(songId, { synthVol, synthMuted });
+    }, PERSIST_DEBOUNCE_MS);
+  }, [synthVol, synthMuted, songId]);
+
+  // Re-anchor on every transport event so seeks, loop wraps and speed changes
+  // never leave the synth running against a stale time reference.
+  useEffect(() => {
+    const audio = backingAudioRef.current;
+    if (!audio) return;
+    const sync = () => {
+      const synth = synthRef.current;
+      if (!synth) return;
+      if (audio.paused) synth.stop();
+      else synth.start(audio.currentTime, audio.playbackRate || 1);
+    };
+    for (const ev of ["play", "playing", "pause", "seeked", "ratechange", "ended"]) {
+      audio.addEventListener(ev, sync);
+    }
+    return () => {
+      for (const ev of ["play", "playing", "pause", "seeked", "ratechange", "ended"]) {
+        audio.removeEventListener(ev, sync);
+      }
+    };
+  }, [hasBacking]);
 
   // Bar/tempo timeline straight from the GP file. Needed to place sync points on
   // (barIndex, barPosition) and to know the score length before playback starts.
@@ -498,11 +557,16 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   }, []);
 
   function togglePlay() {
+    // Resume the synth's AudioContext on the click itself. Chrome starts it
+    // suspended, and the path click → alphaTab → <audio> play event is too many
+    // async hops to reliably keep the user-activation that `resume()` needs.
+    synthRef.current?.resume();
     apiRef.current?.playPause();
   }
   function stop() {
     apiRef.current?.stop();
     setPositionMs(0);
+    synthRef.current?.stop();
     const audio = backingAudioRef.current;
     if (audio) {
       audio.pause();
@@ -756,14 +820,30 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
           </Select>
         </label>
 
-        {hasBacking && (
-          <BackingVolumeControl
-            volume={backingVol}
-            muted={backingMuted}
-            onVolume={setBackingVol}
-            onMuteToggle={() => setBackingMuted((m) => !m)}
-            disabled={controlsDisabled}
-          />
+        {/* Recording and synth levels stay side by side; flex-wrap would
+            otherwise strand them on separate rows. */}
+        {(hasBacking || synthNoteCount > 0) && (
+          <div className="flex shrink-0 items-center gap-2">
+            {hasBacking && (
+              <BackingVolumeControl
+                volume={backingVol}
+                muted={backingMuted}
+                onVolume={setBackingVol}
+                onMuteToggle={() => setBackingMuted((m) => !m)}
+                disabled={controlsDisabled}
+              />
+            )}
+            {synthNoteCount > 0 && (
+              <SynthVolumeControl
+                volume={synthVol}
+                muted={synthMuted}
+                onVolume={setSynthVol}
+                onMuteToggle={() => setSynthMuted((m) => !m)}
+                trackName={trackNames[selectedTrack]}
+                disabled={controlsDisabled}
+              />
+            )}
+          </div>
         )}
 
         {hasBacking && (
@@ -848,6 +928,12 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
           backingMuted={backingMuted}
           onBacking={setBackingVol}
           onBackingMute={setBackingMuted}
+          hasSynth={synthNoteCount > 0}
+          synth={synthVol}
+          synthMuted={synthMuted}
+          onSynth={setSynthVol}
+          onSynthMute={setSynthMuted}
+          synthTrackName={trackNames[selectedTrack]}
           tracks={tracks}
           shownTrackIndex={selectedTrack}
           onShowTrack={selectTrack}

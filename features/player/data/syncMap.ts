@@ -314,7 +314,11 @@ export class SyncMap {
     const last = this.points[this.points.length - 1];
     if (scoreEndSec <= last.scoreTime + 1e-3) return this;
 
-    const slope = this.slopeAtScoreTime(last.scoreTime);
+    // Extrapolate on the map's *typical* slope, not the final segment. DTW paths
+    // routinely end with a near-vertical run (the synthesized decay tail matching
+    // the recording's outro); using it would fling the terminal point seconds
+    // past the end of the song.
+    const slope = this.medianSlope();
     let audioEnd = last.audioTime + (scoreEndSec - last.scoreTime) * slope;
     if (
       audioDurationSec != null &&
@@ -332,6 +336,104 @@ export class SyncMap {
       [...this.points, { scoreTime: scoreEndSec, audioTime: audioEnd }],
       this.diagnostics,
     );
+  }
+
+  /** Median local slope — a robust stand-in for the song's tempo ratio. */
+  medianSlope(): number {
+    const slopes: number[] = [];
+    for (let i = 1; i < this.points.length; i++) {
+      const dx = this.points[i].scoreTime - this.points[i - 1].scoreTime;
+      if (dx > EPS) {
+        slopes.push((this.points[i].audioTime - this.points[i - 1].audioTime) / dx);
+      }
+    }
+    if (slopes.length === 0) return 1;
+    slopes.sort((a, b) => a - b);
+    return slopes[Math.floor(slopes.length / 2)];
+  }
+
+  /**
+   * Enforce the invariants that keep the END of the song honest, whatever
+   * produced the points (DTW, an older pipeline, hand-edited storage):
+   *
+   *  1. Trailing DTW **end-effects** are dropped. A warping path often finishes
+   *     with a near-vertical run — the reference render's decay tail matching the
+   *     recording's outro — so audio races ahead while the score barely moves.
+   *  2. No point may map past the recording. alphaTab would otherwise ask the
+   *     media to seek beyond its own duration and the cursor would still be
+   *     mid-score when playback stops.
+   *  3. The curve reaches the score end, extrapolated on the median slope.
+   *
+   * This is deliberately independent of `withTerminalAnchor`, which trusts an
+   * existing terminal point; here nothing is trusted.
+   */
+  sanitize(opts: {
+    scoreEndSec?: number;
+    audioDurationSec?: number;
+    /** Local slope beyond this multiple of the median is treated as a defect. */
+    maxSlopeFactor?: number;
+  }): { map: SyncMap; repairs: string[] } {
+    const maxFactor = opts.maxSlopeFactor ?? 3;
+    const repairs: string[] = [];
+    const median = this.medianSlope();
+    let pts = [...this.points];
+
+    // 1. Trim a degenerate tail (keep at least two points).
+    let trimmed = 0;
+    while (pts.length > 2) {
+      const dx = pts[pts.length - 1].scoreTime - pts[pts.length - 2].scoreTime;
+      if (dx <= EPS) break;
+      const slope =
+        (pts[pts.length - 1].audioTime - pts[pts.length - 2].audioTime) / dx;
+      if (slope <= median * maxFactor) break;
+      pts.pop();
+      trimmed++;
+    }
+    if (trimmed > 0) {
+      repairs.push(
+        `trimmed ${trimmed} end-effect point(s) whose slope exceeded ${maxFactor}× the median (${median.toFixed(3)}×)`,
+      );
+    }
+
+    // 2. Clamp inside the recording.
+    const audioMax =
+      opts.audioDurationSec != null && Number.isFinite(opts.audioDurationSec)
+        ? opts.audioDurationSec - TERMINAL_EPS
+        : undefined;
+    if (audioMax != null) {
+      const over = pts.filter((p) => p.audioTime > audioMax);
+      if (over.length > 0) {
+        pts = pts.filter((p) => p.audioTime <= audioMax);
+        repairs.push(
+          `dropped ${over.length} point(s) mapping past the recording (${opts.audioDurationSec!.toFixed(2)}s)`,
+        );
+      }
+    }
+
+    if (pts.length < 2) {
+      // Nothing survived; fall back to a plain offset line.
+      const offset = this.points[0].audioTime - this.points[0].scoreTime;
+      repairs.push("map collapsed after repair; fell back to a constant offset");
+      return {
+        map: SyncMap.fromConstantOffset(Math.max(0, offset)),
+        repairs,
+      };
+    }
+
+    let map = new SyncMap(pts, this.diagnostics);
+
+    // 3. Reach the score end on a sane slope.
+    if (opts.scoreEndSec != null && opts.scoreEndSec > 0) {
+      const before = map.points[map.points.length - 1].scoreTime;
+      map = map.withTerminalAnchor(opts.scoreEndSec, opts.audioDurationSec);
+      if (map.points[map.points.length - 1].scoreTime > before + 1e-3) {
+        repairs.push(
+          `extended the curve to the score end (${opts.scoreEndSec.toFixed(2)}s) on the median slope`,
+        );
+      }
+    }
+
+    return { map, repairs };
   }
 
   /**
@@ -472,4 +574,40 @@ export function toAlphaTabFlatSyncPoints(
     });
   }
   return out;
+}
+
+/**
+ * Emit one `FlatSyncPoint` per bar downbeat (plus score end), interpolated
+ * through the warp curve. Preferred for DTW maps: musically meaningful vertices
+ * without hundreds of arbitrary 1 s grid points.
+ */
+export function toAlphaTabBarSyncPoints(
+  map: SyncMap,
+  timeline: BarTimeline,
+): AlphaTabFlatSyncPoint[] {
+  const bars = timeline.bars;
+  if (bars.length === 0) return [];
+
+  const samples: SyncPoint[] = bars.map((b) => ({
+    scoreTime: b.startSec,
+    audioTime: map.scoreTimeToAudioTime(b.startSec),
+  }));
+
+  const endSec = timeline.endSec;
+  const last = samples[samples.length - 1];
+  if (endSec > last.scoreTime + EPS) {
+    samples.push({
+      scoreTime: endSec,
+      audioTime: map.scoreTimeToAudioTime(endSec),
+    });
+  }
+
+  const barTimeline: BarTimeline = {
+    bars: bars.map((b) => ({ barIndex: b.barIndex, startSec: b.startSec })),
+    endSec,
+  };
+  return toAlphaTabFlatSyncPoints(
+    SyncMap.fromPoints(samples, map.diagnostics),
+    barTimeline,
+  );
 }

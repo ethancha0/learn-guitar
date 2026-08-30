@@ -50,8 +50,11 @@ def die(out_path: str, message: str, stage: str = "align") -> None:
     sys.exit(1)
 
 
-def render_midi_to_wav(midi_path: str, soundfont: str | None, out_wav: str) -> None:
-    """MIDI -> WAV. Prefer fluidsynth; fall back to a pretty_midi sine render."""
+def render_midi_to_wav(midi_path: str, soundfont: str | None, out_wav: str) -> str:
+    """MIDI -> WAV. Prefer fluidsynth; fall back to pretty_midi sine render.
+
+    Returns ``referenceRender``: ``"soundfont"`` or ``"sine-fallback"``.
+    """
     sf = soundfont or os.environ.get("ALIGN_SOUNDFONT")
     if sf and os.path.exists(sf):
         # fluidsynth CLI keeps this dependency-light and deterministic.
@@ -61,7 +64,7 @@ def render_midi_to_wav(midi_path: str, soundfont: str | None, out_wav: str) -> N
         ]
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode == 0 and os.path.exists(out_wav) and os.path.getsize(out_wav) > 1000:
-            return
+            return "soundfont"
         # fall through to the pure-python renderer
     try:
         import numpy as np
@@ -74,6 +77,7 @@ def render_midi_to_wav(midi_path: str, soundfont: str | None, out_wav: str) -> N
             raise RuntimeError("empty synthesis")
         peak = float(np.max(np.abs(audio))) or 1.0
         sf_lib.write(out_wav, (audio / peak * 0.9).astype("float32"), SR)
+        return "sine-fallback"
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
             f"could not render reference audio (fluidsynth + pretty_midi both failed): {exc}"
@@ -110,7 +114,7 @@ def get_features(audio, tuning_offset: float):
     return f_chroma_quantized, f_dlnco
 
 
-def path_to_points(wp, ref_len_sec: float, rec_len_sec: float):
+def path_to_points(wp, ref_len_sec: float, rec_len_sec: float, bars_doc=None):
     """warping path (2 x N feature frames) -> monotone {scoreTime, audioTime} list."""
     import numpy as np
     from synctoolbox.dtw.utils import make_path_strictly_monotonic
@@ -119,10 +123,22 @@ def path_to_points(wp, ref_len_sec: float, rec_len_sec: float):
     t_score = wp[0] / FEATURE_RATE
     t_audio = wp[1] / FEATURE_RATE
 
-    # Uniform resample on the score axis (~1 s), keep first/last.
-    step = 1.0
-    grid = np.arange(t_score[0], t_score[-1], step)
-    grid = np.append(grid, t_score[-1])
+    # Resample on bar downbeats when bars.json is available; otherwise ~1 s grid.
+    if bars_doc and bars_doc.get("bars"):
+        grid_list = [0.0]
+        for b in bars_doc["bars"]:
+            s = float(b.get("startSec", b.get("scoreTime", 0)))
+            if s > grid_list[-1] + 1e-6:
+                grid_list.append(s)
+        end = float(bars_doc.get("endSec", t_score[-1]))
+        if end > grid_list[-1] + 1e-6:
+            grid_list.append(end)
+        grid = np.array(sorted(grid_list))
+    else:
+        step = 1.0
+        grid = np.arange(t_score[0], t_score[-1], step)
+        grid = np.append(grid, t_score[-1])
+
     audio_on_grid = np.interp(grid, t_score, t_audio)
 
     # Force strict monotonicity after interpolation.
@@ -185,36 +201,65 @@ def diagnose(points, t_score, t_audio) -> dict:
     }
 
 
-def clip_to_score_end(points, score_end: float):
-    """Trim/interpolate the path so its last point is exactly the score end.
+def _median_slope(points) -> float:
+    """Typical audio-per-score slope, robust to a few pathological segments."""
+    slopes = []
+    for a, b in zip(points, points[1:]):
+        dx = b["scoreTime"] - a["scoreTime"]
+        if dx > 1e-9:
+            slopes.append((b["audioTime"] - a["audioTime"]) / dx)
+    if not slopes:
+        return 1.0
+    slopes.sort()
+    return slopes[len(slopes) // 2]
 
-    The reference render is longer than the score (release tails), and alphaTab
-    stretches everything after our last sync point to the media duration — so an
-    explicit, correct terminal point is what keeps the end of the song honest.
+
+def clip_to_score_end(points, score_end: float, rec_len: float, max_slope_factor: float = 3.0):
+    """Trim the path to the score end, repairing DTW end-effects.
+
+    Two things go wrong at the tail:
+
+    * The reference render outlasts the score (release tails), so the path
+      continues past the last bar.
+    * The final frames often go near-vertical — the decay tail matching the
+      recording's outro — so audio races ahead while the score barely moves.
+      Extrapolating on that slope throws the terminal point seconds past the end
+      of the recording, and the audio then finishes before the cursor does.
+
+    So: drop the degenerate tail, extrapolate on the *median* slope, and never
+    emit a point at or beyond the recording duration.
     """
     kept = [p for p in points if p["scoreTime"] <= score_end + 1e-6]
     if len(kept) < 2:
         return kept
-    last = kept[-1]
-    if last["scoreTime"] >= score_end - 1e-3:
+
+    median = _median_slope(kept)
+
+    # Drop trailing points whose slope is far outside the song's tempo ratio.
+    while len(kept) > 2:
+        dx = kept[-1]["scoreTime"] - kept[-2]["scoreTime"]
+        if dx <= 1e-9:
+            break
+        slope = (kept[-1]["audioTime"] - kept[-2]["audioTime"]) / dx
+        if slope <= median * max_slope_factor:
+            break
+        kept.pop()
+
+    audio_max = rec_len - 0.005
+    kept = [p for p in kept if p["audioTime"] <= audio_max]
+    if len(kept) < 2:
         return kept
-    # Interpolate the terminal audio time using the final local slope.
-    nxt = next((p for p in points if p["scoreTime"] > last["scoreTime"]), None)
-    prev = kept[-2]
-    if nxt:
-        span = nxt["scoreTime"] - last["scoreTime"]
-        slope = (nxt["audioTime"] - last["audioTime"]) / span if span > 1e-9 else 1.0
-    else:
-        span = last["scoreTime"] - prev["scoreTime"]
-        slope = (last["audioTime"] - prev["audioTime"]) / span if span > 1e-9 else 1.0
-    kept.append(
-        {
-            "scoreTime": round(score_end, 4),
-            "audioTime": round(
-                last["audioTime"] + (score_end - last["scoreTime"]) * slope, 4
-            ),
-        }
-    )
+
+    last = kept[-1]
+    if last["scoreTime"] < score_end - 1e-3:
+        terminal = last["audioTime"] + (score_end - last["scoreTime"]) * median
+        if terminal > last["audioTime"] + 1e-3:
+            kept.append(
+                {
+                    "scoreTime": round(score_end, 4),
+                    "audioTime": round(min(terminal, audio_max), 4),
+                }
+            )
     return kept
 
 
@@ -287,8 +332,9 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         ref_wav = os.path.join(tmp, "ref.wav")
+        reference_render = "unknown"
         try:
-            render_midi_to_wav(args.midi, args.soundfont, ref_wav)
+            reference_render = render_midi_to_wav(args.midi, args.soundfont, ref_wav)
         except Exception as exc:  # noqa: BLE001
             die(args.out, str(exc), "render")
 
@@ -338,23 +384,47 @@ def main() -> None:
 
         ref_len = ref_audio.size / SR
         rec_len = rec_audio.size / SR
-        points, t_score, t_audio = path_to_points(wp, ref_len, rec_len)
+        points, t_score, t_audio = path_to_points(wp, ref_len, rec_len, bars_doc)
         if len(points) < 2:
             die(args.out, "warping path collapsed to < 2 points", "dtw")
 
         # The DTW path lives in *rendered reference* time, which runs past the
-        # score end by the synth's release tail. Trim there so the map never
-        # claims score positions that do not exist.
+        # score end by the synth's release tail, and its final frames are often a
+        # degenerate near-vertical run. Repair both, and keep every point inside
+        # the recording.
         score_end = args.score_duration_sec or bars_doc.get("endSec")
         if score_end:
-            points = clip_to_score_end(points, float(score_end))
+            points = clip_to_score_end(points, float(score_end), rec_len)
             if len(points) < 2:
                 die(args.out, "no alignment points inside the score range", "dtw")
 
+        # Stage-2: snap bar audio times toward recording onsets.
+        import sys
+        from pathlib import Path
+
+        _align_dir = str(Path(__file__).resolve().parent)
+        if _align_dir not in sys.path:
+            sys.path.insert(0, _align_dir)
+        from snap import snap_bars_to_onsets
+
+        points, snap_shifts = snap_bars_to_onsets(points, rec_audio, SR)
+        snap_max_ms = max((abs(s) for s in snap_shifts), default=0.0)
+
         diag = diagnose(points, t_score, t_audio)
+        diag["referenceRender"] = reference_render
+        diag["snapMaxMs"] = round(float(snap_max_ms), 1)
+        diag["snapMeanAbsMs"] = round(
+            float(sum(abs(s) for s in snap_shifts) / max(len(snap_shifts), 1)), 1
+        )
 
         status = "ok"
         message = f"{len(points)} points; RMS {diag['residualRmsMs']} ms from linear fit."
+        if reference_render == "sine-fallback":
+            status = "low-confidence"
+            message = (
+                f"Aligned with sine-fallback reference (no soundfont). "
+                f"Set ALIGN_SOUNDFONT for better accuracy. {message}"
+            )
         # Obvious-failure guards: refuse to emit a misleading map.
         if diag["pathStability"] < 0.35 or diag["residualRmsMs"] > 900:
             status = "failed"

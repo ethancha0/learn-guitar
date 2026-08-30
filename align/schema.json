@@ -36,6 +36,13 @@
         "residualRmsMs": { "type": "number", "description": "RMS deviation of the DTW path from its own global linear fit — how much a single-offset method would miss." },
         "residualMaxMs": { "type": "number" },
         "pathStability": { "type": "number", "description": "Fraction of the path whose local slope stays near the median (1.0 = rock steady)." },
+        "referenceRender": {
+          "type": "string",
+          "enum": ["soundfont", "sine-fallback", "unknown"],
+          "description": "How the MIDI reference was rendered for DTW."
+        },
+        "snapMaxMs": { "type": "number", "description": "Largest bar onset snap shift, ms." },
+        "snapMeanAbsMs": { "type": "number", "description": "Mean absolute bar onset snap shift, ms." },
         "suspectRegions": {
           "type": "array",
           "items": {

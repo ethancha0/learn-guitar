@@ -78,19 +78,23 @@ const division = midi.division; // ticks per quarter note
 const masterBars = gen.tickLookup.masterBars;
 let ms = 0;
 const bars = [];
+// A bar with no tempo change inherits the tempo still in force — matches
+// scoreTimeline.ts / extractScoreTimeline() in the browser player.
+let activeTempo = score.tempo;
 for (let i = 0; i < masterBars.length; i++) {
   const b = masterBars[i];
   bars.push({ barIndex: i, startSec: Number((ms / 1000).toFixed(6)) });
   const changes =
     b.tempoChanges && b.tempoChanges.length
       ? b.tempoChanges
-      : [{ tick: b.start, tempo: score.tempo }];
+      : [{ tick: b.start, tempo: activeTempo }];
   let segStart = b.start;
   for (let j = 0; j < changes.length; j++) {
     const segEnd = j + 1 < changes.length ? changes[j + 1].tick : b.end;
     const beats = (segEnd - segStart) / division;
     ms += beats * (60000 / changes[j].tempo);
     segStart = segEnd;
+    activeTempo = changes[j].tempo;
   }
 }
 

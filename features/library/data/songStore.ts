@@ -163,6 +163,9 @@ export interface AudioSyncSettings {
   /** Persisted "original recording" channel state. */
   backingVol?: number;
   backingMuted?: boolean;
+  /** Persisted level for the synthesized reference tone of the shown track. */
+  synthVol?: number;
+  synthMuted?: boolean;
 }
 
 function readAudioSyncMap(): Record<string, AudioSyncSettings> {
@@ -190,4 +193,66 @@ export function patchAudioSync(
   const current: AudioSyncSettings = map[songId] ?? { offsetMs: 0 };
   map[songId] = { ...current, ...patch };
   window.localStorage.setItem(AUDIO_SYNC_KEY, JSON.stringify(map));
+  window.dispatchEvent(new Event("learn-bass:audio-sync-changed"));
+}
+
+function withStoredSyncMap(
+  songId: string,
+  fn: (stored: StoredSyncMap | undefined) => StoredSyncMap | undefined,
+): void {
+  const settings = getAudioSync(songId);
+  const next = fn(settings?.syncMap);
+  if (next) {
+    patchAudioSync(songId, { syncMap: next, offsetMs: 0 });
+  }
+}
+
+/** Append or replace an anchor at the same scoreTime (within 5 ms). */
+export function upsertSyncAnchor(songId: string, anchor: SyncAnchor): void {
+  withStoredSyncMap(songId, (stored) => {
+    const base: StoredSyncMap = stored ?? {
+      points: [],
+      method: "anchor-only",
+      status: "ok",
+      createdAt: Date.now(),
+    };
+    const anchors = [...(base.anchors ?? [])];
+    const idx = anchors.findIndex(
+      (a) => Math.abs(a.scoreTime - anchor.scoreTime) < 0.005,
+    );
+    const entry: SyncAnchor = {
+      ...anchor,
+      createdAt: anchor.createdAt ?? Date.now(),
+    };
+    if (idx >= 0) anchors[idx] = entry;
+    else anchors.push(entry);
+    anchors.sort((a, b) => a.scoreTime - b.scoreTime);
+    return { ...base, anchors };
+  });
+}
+
+export function removeSyncAnchor(songId: string, scoreTime: number): void {
+  withStoredSyncMap(songId, (stored) => {
+    if (!stored?.anchors?.length) return stored;
+    const anchors = stored.anchors.filter(
+      (a) => Math.abs(a.scoreTime - scoreTime) >= 0.005,
+    );
+    return { ...stored, anchors: anchors.length ? anchors : undefined };
+  });
+}
+
+export function setSyncAnchors(songId: string, anchors: SyncAnchor[]): void {
+  withStoredSyncMap(songId, (stored) => {
+    const base: StoredSyncMap = stored ?? {
+      points: [],
+      method: "anchor-only",
+      status: "ok",
+      createdAt: Date.now(),
+    };
+    const sorted = [...anchors].sort((a, b) => a.scoreTime - b.scoreTime);
+    return {
+      ...base,
+      anchors: sorted.length ? sorted : undefined,
+    };
+  });
 }

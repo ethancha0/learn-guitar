@@ -1,6 +1,15 @@
 "use client";
 
-import { Volume2, VolumeX, Eye, EyeOff, Music2, AudioWaveform, X } from "lucide-react";
+import {
+  Volume2,
+  VolumeX,
+  Eye,
+  EyeOff,
+  Music2,
+  AudioWaveform,
+  Guitar,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
 import { AudioOffsetControl } from "./AudioOffsetControl";
@@ -27,6 +36,13 @@ interface MixerProps {
   backingMuted: boolean;
   onBacking: (v: number) => void;
   onBackingMute: (muted: boolean) => void;
+  /** Synthesized reference tone for the track currently shown in the tab. */
+  hasSynth: boolean;
+  synth: number;
+  synthMuted: boolean;
+  onSynth: (v: number) => void;
+  onSynthMute: (muted: boolean) => void;
+  synthTrackName?: string;
   tracks: MixerTrack[];
   shownTrackIndex: number;
   onShowTrack: (index: number) => void;
@@ -184,6 +200,12 @@ export function Mixer({
   backingMuted,
   onBacking,
   onBackingMute,
+  hasSynth,
+  synth,
+  synthMuted,
+  onSynth,
+  onSynthMute,
+  synthTrackName,
   tracks,
   shownTrackIndex,
   onShowTrack,
@@ -204,29 +226,44 @@ export function Mixer({
       </div>
 
       <div className="flex flex-1 flex-col gap-3 overflow-y-auto">
-        {hasBacking && (
+        {(hasBacking || hasSynth) && (
           <div className="flex flex-col gap-2">
             <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
-              Recording
+              Mix
             </p>
-            <ChannelRow
-              icon={<AudioWaveform className="h-4 w-4" />}
-              label="Original recording"
-              sublabel="mp3"
-              volume={backing}
-              onVolume={onBacking}
-              muted={backingMuted}
-              onMute={onBackingMute}
-            />
-            <div className="rounded-md bg-surface-overlay px-3 py-2.5">
-              <AudioOffsetControl
-                offsetMs={offsetMs}
-                onChange={onOffsetChange}
-                onReset={onOffsetReset}
-                onAutoAlign={onAutoAlign}
-                autoAligning={autoAligning}
+            {hasBacking && (
+              <ChannelRow
+                icon={<AudioWaveform className="h-4 w-4" />}
+                label="Original recording"
+                sublabel="mp3"
+                volume={backing}
+                onVolume={onBacking}
+                muted={backingMuted}
+                onMute={onBackingMute}
               />
-            </div>
+            )}
+            {hasSynth && (
+              <ChannelRow
+                icon={<Guitar className="h-4 w-4" />}
+                label={synthTrackName ? `Synth · ${synthTrackName}` : "Synth instrument"}
+                sublabel="tab"
+                volume={synth}
+                onVolume={onSynth}
+                muted={synthMuted}
+                onMute={onSynthMute}
+              />
+            )}
+            {hasBacking && (
+              <div className="rounded-md bg-surface-overlay px-3 py-2.5">
+                <AudioOffsetControl
+                  offsetMs={offsetMs}
+                  onChange={onOffsetChange}
+                  onReset={onOffsetReset}
+                  onAutoAlign={onAutoAlign}
+                  autoAligning={autoAligning}
+                />
+              </div>
+            )}
           </div>
         )}
 
@@ -245,8 +282,8 @@ export function Mixer({
             />
           ))}
           <p className="px-1 text-[11px] leading-snug text-zinc-500">
-            The eye picks which part is shown in the tab. Audio comes from the
-            recording, so instruments have no separate level here.
+            The eye picks which part is shown in the tab — and which part the
+            synth plays. Level for it is under <em>Mix</em> above.
           </p>
         </div>
       </div>

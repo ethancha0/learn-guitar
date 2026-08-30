@@ -215,6 +215,59 @@ Objective end-to-end measurement is unchanged: `/sync-debug/[songId]` →
 
 ---
 
+## 7b. Follow-up: DTW end-effects (fast-tempo song, error at the very end)
+
+**Symptom.** With a fast song the diagnostics panel showed a healthy body and a
+blown-up tail:
+
+```
+Score duration 203.3s   Audio duration 205.5s
+  0.00s → 0.00s    +0.00s
+ 50.82s → 51.31s   +0.48s     ← steady
+101.65s → 102.14s  +0.49s
+152.47s → 152.95s  +0.48s
+203.29s → 212.29s  +9.00s     ← 6.8s PAST the end of the recording
+Local rate 1.2400×   residualMaxMs 8289.3
+```
+
+**Cause — a DTW end-effect, then extrapolated on it.** A warping path routinely
+finishes with a near-vertical run: the FluidSynth reference's decay tail matches
+against the recording's outro, so audio races ahead while the score barely moves.
+`clip_to_score_end()` then extrapolated the terminal point using *that* final
+segment's slope, throwing it seconds past the end of the audio. Two gaps let it
+through:
+
+- `clip_to_score_end()` had **no clamp to the recording duration**.
+- `SyncMap.withTerminalAnchor()` **early-returns** when a terminal point already
+  exists, so a bad point produced offline was never validated on the client.
+
+**Fix — validate, don't trust.** New `SyncMap.sanitize({ scoreEndSec, audioDurationSec })`
+runs on every stored map regardless of origin:
+
+1. Trims trailing points whose local slope exceeds **3× the median slope** (a
+   real tempo change is a fraction of that; 3×+ is a defect).
+2. Drops any point mapping past the recording.
+3. Extends to the score end on the **median** slope, not the final segment.
+4. Returns a `repairs[]` list, surfaced in the diagnostics panel.
+
+`withTerminalAnchor` now also extrapolates on `medianSlope()`. Mirrored in
+`align.py` (`clip_to_score_end` gained `rec_len` + the same median-slope logic),
+so new runs are correct at the source.
+
+**Verified end-to-end** by injecting the reported map into storage:
+
+```
+before: 203.29s → 212.29s  (+9.00s)   local rate 1.2400×
+after : 203.29s → 203.89s  (+0.59s)   local rate 1.0015×
+panel : "Sync map repaired: trimmed 1 end-effect point(s) whose slope exceeded
+         3× the median (1.002×); extended the curve to the score end on the
+         median slope."
+```
+
+Existing stored maps are repaired **at load time**, so no DTW re-run is needed.
+
+---
+
 ## 8. Remaining work for GoPlayAlong-like reliability
 
 1. **Anchor editing UI** — the model and backend are ready; the waveform page

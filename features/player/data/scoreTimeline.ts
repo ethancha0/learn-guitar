@@ -58,6 +58,10 @@ export async function extractScoreTimeline(
   let ms = 0;
   const bars: BarMarker[] = [];
   const beatSec: number[] = [];
+  // A bar with no tempo change inherits the tempo still in force, NOT the
+  // score's opening tempo — otherwise every bar after a tempo change is timed
+  // wrongly and the error accumulates toward the end of the song.
+  let activeTempo = score.tempo;
 
   for (let i = 0; i < masterBars.length; i++) {
     const b = masterBars[i];
@@ -73,7 +77,7 @@ export async function extractScoreTimeline(
     const changes =
       b.tempoChanges && b.tempoChanges.length
         ? b.tempoChanges
-        : [{ tick: b.start, tempo: score.tempo }];
+        : [{ tick: b.start, tempo: activeTempo }];
 
     // Beat grid within the bar (quarter-note beats scaled by the denominator).
     const barStartMs = ms;
@@ -95,6 +99,7 @@ export async function extractScoreTimeline(
       const beats = (segEnd - segStart) / division;
       ms += beats * (60000 / changes[j].tempo);
       segStart = segEnd;
+      activeTempo = changes[j].tempo;
     }
   }
 

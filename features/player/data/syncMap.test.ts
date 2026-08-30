@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   SyncMap,
   SyncMapError,
+  toAlphaTabBarSyncPoints,
   toAlphaTabFlatSyncPoints,
   type SyncPoint,
 } from "./syncMap";
@@ -277,6 +278,112 @@ describe("SyncMap.withTerminalAnchor (end-of-song regression)", () => {
   });
 });
 
+describe("SyncMap.sanitize (reported end-of-song failure)", () => {
+  /**
+   * Reproduces the map from the diagnostics panel: a healthy body at ~+0.48s lag
+   * (slope 1.0015) followed by a DTW end-effect that maps the score end to
+   * 212.29s of a 205.5s recording.
+   */
+  function brokenMap() {
+    const pts: SyncPoint[] = [];
+    for (let s = 0; s <= 200; s += 5) {
+      pts.push({ scoreTime: s, audioTime: s * 1.0015 + 0.48 });
+    }
+    pts.push({ scoreTime: 201.35, audioTime: 201.94 });
+    pts.push({ scoreTime: 203.29, audioTime: 212.29 }); // slope ~5.3x
+    return SyncMap.fromPoints(pts, { method: "dtw:mrmsdtw" });
+  }
+
+  it("maps past the end of the recording before repair", () => {
+    expect(brokenMap().scoreTimeToAudioTime(203.29)).toBeCloseTo(212.29, 2);
+  });
+
+  it("brings the score end back inside the recording", () => {
+    const { map } = brokenMap().sanitize({
+      scoreEndSec: 203.29,
+      audioDurationSec: 205.5,
+    });
+    const end = map.scoreTimeToAudioTime(203.29);
+    expect(end).toBeLessThan(205.5);
+    expect(end).toBeGreaterThan(203); // still lands near the end, not early
+  });
+
+  it("reports what it repaired", () => {
+    const { repairs } = brokenMap().sanitize({
+      scoreEndSec: 203.29,
+      audioDurationSec: 205.5,
+    });
+    expect(repairs.join(" ")).toMatch(/end-effect|past the recording/);
+  });
+
+  it("leaves the healthy body untouched", () => {
+    const { map } = brokenMap().sanitize({
+      scoreEndSec: 203.29,
+      audioDurationSec: 205.5,
+    });
+    for (const s of [50.82, 101.65, 152.47]) {
+      expect(map.scoreTimeToAudioTime(s)).toBeCloseTo(s * 1.0015 + 0.48, 1);
+    }
+  });
+
+  it("never maps any score position past the recording", () => {
+    const { map } = brokenMap().sanitize({
+      scoreEndSec: 203.29,
+      audioDurationSec: 205.5,
+    });
+    for (let s = 0; s <= 203.29; s += 0.5) {
+      expect(map.scoreTimeToAudioTime(s)).toBeLessThanOrEqual(205.5);
+    }
+  });
+
+  it("is a no-op on an already-healthy map", () => {
+    const good = SyncMap.fromPoints([
+      { scoreTime: 0, audioTime: 0.48 },
+      { scoreTime: 100, audioTime: 100.63 },
+      { scoreTime: 203.29, audioTime: 203.79 },
+    ]);
+    const { map, repairs } = good.sanitize({
+      scoreEndSec: 203.29,
+      audioDurationSec: 205.5,
+    });
+    expect(repairs).toHaveLength(0);
+    expect(map.points).toHaveLength(3);
+  });
+
+  it("does not mistake a real tempo change for an end-effect", () => {
+    // 1.0x for the first half, 1.15x for the second — musical, not a defect.
+    const pts: SyncPoint[] = [];
+    for (let s = 0; s <= 100; s += 5) pts.push({ scoreTime: s, audioTime: s });
+    for (let s = 105; s <= 200; s += 5) {
+      pts.push({ scoreTime: s, audioTime: 100 + (s - 100) * 1.15 });
+    }
+    const { map, repairs } = SyncMap.fromPoints(pts).sanitize({
+      scoreEndSec: 200,
+      audioDurationSec: 260,
+    });
+    expect(repairs).toHaveLength(0);
+    expect(map.slopeAtScoreTime(150)).toBeCloseTo(1.15, 2);
+  });
+
+  it("survives a map where everything is past the recording", () => {
+    const { map, repairs } = SyncMap.fromPoints([
+      { scoreTime: 0, audioTime: 500 },
+      { scoreTime: 100, audioTime: 600 },
+    ]).sanitize({ scoreEndSec: 100, audioDurationSec: 205.5 });
+    expect(repairs.join(" ")).toMatch(/collapsed/);
+    expect(Number.isFinite(map.scoreTimeToAudioTime(50))).toBe(true);
+  });
+});
+
+describe("SyncMap.medianSlope", () => {
+  it("ignores a single pathological segment", () => {
+    const pts: SyncPoint[] = [];
+    for (let s = 0; s <= 100; s += 5) pts.push({ scoreTime: s, audioTime: s * 1.02 });
+    pts.push({ scoreTime: 101, audioTime: 130 }); // outlier
+    expect(SyncMap.fromPoints(pts).medianSlope()).toBeCloseTo(1.02, 2);
+  });
+});
+
 describe("SyncMap.simplify", () => {
   it("collapses a straight line to its endpoints", () => {
     const pts: SyncPoint[] = [];
@@ -337,6 +444,27 @@ describe("SyncMap.withAnchors", () => {
     ]);
     expect(map.scoreTimeToAudioTime(82.14)).toBeCloseTo(83.72, 6);
     expect(map.scoreTimeToAudioTime(150)).toBeCloseTo(152.5, 6);
+  });
+});
+
+describe("toAlphaTabBarSyncPoints", () => {
+  const timeline = {
+    bars: [
+      { barIndex: 0, startSec: 0 },
+      { barIndex: 1, startSec: 4 },
+      { barIndex: 2, startSec: 8 },
+    ],
+    endSec: 12,
+  };
+
+  it("emits one point per bar plus score end", () => {
+    const map = SyncMap.fromPoints([
+      { scoreTime: 0, audioTime: 0.5 },
+      { scoreTime: 12, audioTime: 12.5 },
+    ]);
+    const pts = toAlphaTabBarSyncPoints(map, timeline);
+    expect(pts.length).toBeGreaterThanOrEqual(3);
+    expect(pts[0].millisecondOffset).toBe(500);
   });
 });
 

@@ -13,9 +13,10 @@ import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
 import { cn } from "@/lib/cn";
 import { base64ToBytes } from "@/features/library/data/tabFile";
-import { useSongById, getAudioSync } from "@/features/library/data/songStore";
+import { useSongById, getAudioSync, type SyncAnchor } from "@/features/library/data/songStore";
 import { getBackingAudio } from "@/features/player/data/audioStore";
-import { SyncMap } from "@/features/player/data/syncMap";
+import { buildPlaybackSyncMap } from "@/features/player/data/buildSyncMap";
+import type { SyncMap } from "@/features/player/data/syncMap";
 import {
   extractScoreTimeline,
   type ScoreTimeline,
@@ -28,9 +29,19 @@ import {
   type OnsetHit,
   type OnsetEnvelope,
 } from "@/features/player/data/onsetDetect";
+import {
+  computeOnsetHistogram,
+  drawOnsetHistogram,
+  nearestPeakSec,
+  type OnsetHistogram,
+} from "@/features/player/data/onsetHistogram";
+import { upsertSyncAnchor } from "@/features/library/data/songStore";
 import { SyncDebugSession } from "@/features/player/data/syncDebugSession";
+import { SyncAnchorEditor } from "@/features/player/components/SyncAnchorEditor";
 
-const WAVE_H = 180;
+const WAVE_H = 120;
+const HIST_H = 60;
+const CANVAS_H = WAVE_H + HIST_H;
 const MARKER_SOURCES = ["bars", "beats", "syncMap"] as const;
 type MarkerSource = (typeof MARKER_SOURCES)[number];
 
@@ -58,8 +69,11 @@ export function SyncDebugView({ songId }: { songId: string }) {
   const song = useSongById(songId);
 
   const [buffer, setBuffer] = useState<AudioBuffer | null>(null);
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [timeline, setTimeline] = useState<ScoreTimeline | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [syncVersion, setSyncVersion] = useState(0);
+  const [selectedScoreTime, setSelectedScoreTime] = useState<number | null>(null);
 
   const [pxPerSec, setPxPerSec] = useState(80);
   const [rate, setRate] = useState(1);
@@ -91,6 +105,7 @@ export function SyncDebugView({ songId }: { songId: string }) {
       try {
         const blob = await getBackingAudio(songId);
         if (!blob) throw new Error("No recording stored for this song.");
+        if (!cancelled) setAudioBlob(blob);
         const decoded = await decodeAudio(blob);
         if (cancelled) return;
         setBuffer(decoded);
@@ -110,6 +125,16 @@ export function SyncDebugView({ songId }: { songId: string }) {
       cancelled = true;
     };
   }, [songId, song?.tabData]);
+
+  useEffect(() => {
+    const bump = () => setSyncVersion((v) => v + 1);
+    window.addEventListener("learn-bass:audio-sync-changed", bump);
+    window.addEventListener("storage", bump);
+    return () => {
+      window.removeEventListener("learn-bass:audio-sync-changed", bump);
+      window.removeEventListener("storage", bump);
+    };
+  }, []);
 
   // --- session ------------------------------------------------------------
   useEffect(() => {
@@ -137,25 +162,34 @@ export function SyncDebugView({ songId }: { songId: string }) {
   }, [rate]);
 
   // --- sync map ---------------------------------------------------------------
-  const syncMap = useMemo<SyncMap | null>(() => {
-    if (!timeline || !buffer) return null;
-    const stored = getAudioSync(songId);
-    if (stored?.syncMap && stored.syncMap.points.length >= 2) {
-      try {
-        return SyncMap.fromPoints(stored.syncMap.points, {
-          method: stored.syncMap.method,
-          ...(stored.syncMap.diagnostics ?? {}),
-        });
-      } catch {
-        /* fall through */
-      }
+  const syncSettings = useMemo(
+    () => getAudioSync(songId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [songId, syncVersion],
+  );
+
+  const { syncMap, syncSource, syncWarning, anchors } = useMemo(() => {
+    if (!timeline || !buffer) {
+      return {
+        syncMap: null as SyncMap | null,
+        syncSource: "none" as const,
+        syncWarning: undefined,
+        anchors: [] as SyncAnchor[],
+      };
     }
-    return SyncMap.fromOffset(
-      (stored?.offsetMs ?? 0) / 1000,
-      timeline.endSec,
-      buffer.duration,
-    );
-  }, [timeline, buffer, songId]);
+    const built = buildPlaybackSyncMap({
+      stored: syncSettings?.syncMap ?? null,
+      offsetMs: syncSettings?.offsetMs ?? 0,
+      scoreEndSec: timeline.endSec,
+      audioDurationSec: buffer.duration,
+    });
+    return {
+      syncMap: built.syncMap,
+      syncSource: built.syncSource,
+      syncWarning: built.syncWarning,
+      anchors: built.anchors,
+    };
+  }, [timeline, buffer, syncSettings, syncVersion]);
 
   // --- markers -----------------------------------------------------------------
   const markers = useMemo<Marker[]>(() => {
@@ -230,6 +264,29 @@ export function SyncDebugView({ songId }: { songId: string }) {
     return computePeaks(buffer, Math.min(width, 200_000));
   }, [buffer, pxPerSec]);
 
+  const onsetHist = useMemo<OnsetHistogram | null>(() => {
+    if (!buffer || !peaks) return null;
+    if (!envRef.current) envRef.current = onsetEnvelope(buffer);
+    return computeOnsetHistogram(
+      envRef.current,
+      peaks.bucketCount,
+      buffer.duration,
+    );
+  }, [buffer, peaks]);
+
+  const suspectRegions = useMemo(() => {
+    const raw = syncSettings?.syncMap?.diagnostics?.suspectRegions;
+    if (!Array.isArray(raw) || !syncMap) return [];
+    return raw as Array<{ scoreStart: number; scoreEnd: number; reason: string }>;
+  }, [syncSettings, syncMap]);
+
+  const liveErrorMs = useMemo(() => {
+    if (!syncMap || !timeline) return null;
+    const scoreTime = syncMap.audioTimeToScoreTime(posSec);
+    const mapped = syncMap.scoreTimeToAudioTime(scoreTime);
+    return (mapped - posSec) * 1000;
+  }, [syncMap, timeline, posSec]);
+
   const renderBase = useCallback(() => {
     if (!peaks || !buffer) return;
     const width = Math.ceil(buffer.duration * pxPerSec);
@@ -239,11 +296,21 @@ export function SyncDebugView({ songId }: { songId: string }) {
       baseCanvasRef.current = base;
     }
     base.width = width;
-    base.height = WAVE_H;
+    base.height = CANVAS_H;
     const g = base.getContext("2d");
     if (!g) return;
     g.fillStyle = "#0f1115";
-    g.fillRect(0, 0, width, WAVE_H);
+    g.fillRect(0, 0, width, CANVAS_H);
+
+    // suspect regions (red tint on waveform)
+    if (syncMap && suspectRegions.length) {
+      g.fillStyle = "rgba(248,113,113,0.12)";
+      for (const r of suspectRegions) {
+        const x0 = syncMap.scoreTimeToAudioTime(r.scoreStart) * pxPerSec;
+        const x1 = syncMap.scoreTimeToAudioTime(r.scoreEnd) * pxPerSec;
+        g.fillRect(x0, 0, x1 - x0, WAVE_H);
+      }
+    }
 
     // waveform
     const mid = WAVE_H / 2;
@@ -285,7 +352,38 @@ export function SyncDebugView({ songId }: { songId: string }) {
       }
     }
 
-    // residual ticks
+    // manual anchor markers (blue)
+    for (const a of anchors) {
+      const x = a.audioTime * pxPerSec;
+      g.strokeStyle = "rgba(96,165,250,0.95)";
+      g.lineWidth = 2;
+      g.beginPath();
+      g.moveTo(x, 0);
+      g.lineTo(x, WAVE_H);
+      g.stroke();
+      g.lineWidth = 1;
+      g.fillStyle = "#60a5fa";
+      g.beginPath();
+      g.moveTo(x, 6);
+      g.lineTo(x - 5, 16);
+      g.lineTo(x + 5, 16);
+      g.closePath();
+      g.fill();
+    }
+
+    // selected beat highlight
+    if (selectedScoreTime != null && syncMap) {
+      const x = syncMap.scoreTimeToAudioTime(selectedScoreTime) * pxPerSec;
+      g.strokeStyle = "rgba(250,204,21,0.8)";
+      g.setLineDash([4, 3]);
+      g.beginPath();
+      g.moveTo(x, 0);
+      g.lineTo(x, WAVE_H);
+      g.stroke();
+      g.setLineDash([]);
+    }
+
+    // residual ticks (above histogram)
     if (hits) {
       const downbeats = markers.filter((m) => m.isDownbeat);
       hits.forEach((h, i) => {
@@ -307,7 +405,34 @@ export function SyncDebugView({ songId }: { songId: string }) {
         g.fill();
       });
     }
-  }, [peaks, buffer, pxPerSec, markers, hits, markerSource]);
+
+    // histogram row
+    g.fillStyle = "#0a0c0f";
+    g.fillRect(0, WAVE_H, width, HIST_H);
+    g.strokeStyle = "rgba(255,255,255,0.06)";
+    g.beginPath();
+    g.moveTo(0, WAVE_H);
+    g.lineTo(width, WAVE_H);
+    g.stroke();
+    if (onsetHist) {
+      g.save();
+      g.translate(0, WAVE_H);
+      drawOnsetHistogram(g, onsetHist, width, HIST_H);
+      g.restore();
+    }
+  }, [
+    peaks,
+    buffer,
+    pxPerSec,
+    markers,
+    hits,
+    markerSource,
+    anchors,
+    suspectRegions,
+    syncMap,
+    onsetHist,
+    selectedScoreTime,
+  ]);
 
   useEffect(() => {
     renderBase();
@@ -339,7 +464,7 @@ export function SyncDebugView({ songId }: { songId: string }) {
           g.lineWidth = 1.5;
           g.beginPath();
           g.moveTo(x, 0);
-          g.lineTo(x, WAVE_H);
+          g.lineTo(x, CANVAS_H);
           g.stroke();
           g.lineWidth = 1;
         }
@@ -378,13 +503,56 @@ export function SyncDebugView({ songId }: { songId: string }) {
     setPlaying(false);
     setPosSec(0);
   };
-  const seekToClientX = (clientX: number) => {
+  const seekToClientX = (clientX: number, e?: React.MouseEvent) => {
     const sc = scrollRef.current;
     if (!sc || !sessionRef.current) return;
     const rect = sc.getBoundingClientRect();
     const x = clientX - rect.left + sc.scrollLeft;
-    sessionRef.current.seek(x / pxPerSec);
-    setPosSec(x / pxPerSec);
+    const audioTime = x / pxPerSec;
+
+    const inHistogram = e
+      ? (() => {
+          const canvas = canvasRef.current;
+          if (!canvas) return false;
+          const cr = canvas.getBoundingClientRect();
+          return e.clientY - cr.top > WAVE_H;
+        })()
+      : false;
+
+    if (inHistogram && onsetHist) {
+      const peak = nearestPeakSec(onsetHist, audioTime, 0.2);
+      const target = peak ?? audioTime;
+      if (e?.shiftKey && selectedScoreTime != null) {
+        upsertSyncAnchor(songId, {
+          scoreTime: selectedScoreTime,
+          audioTime: target,
+          label: `bar @ ${selectedScoreTime.toFixed(2)}s`,
+        });
+        setSyncVersion((v) => v + 1);
+      } else {
+        sessionRef.current.seek(target);
+        setPosSec(target);
+      }
+      return;
+    }
+
+    if (e?.shiftKey && selectedScoreTime != null) {
+      let audio = audioTime;
+      if (envRef.current) {
+        const hit = nearestOnset(envRef.current, audioTime, 0.35);
+        if (hit.found) audio = hit.onsetSec;
+      }
+      upsertSyncAnchor(songId, {
+        scoreTime: selectedScoreTime,
+        audioTime: audio,
+        label: `bar @ ${selectedScoreTime.toFixed(2)}s`,
+      });
+      setSyncVersion((v) => v + 1);
+      return;
+    }
+
+    sessionRef.current.seek(audioTime);
+    setPosSec(audioTime);
   };
 
   const stats = hits ? summariseResiduals(hits) : null;
@@ -418,8 +586,29 @@ export function SyncDebugView({ songId }: { songId: string }) {
           <p className="text-sm text-zinc-400">
             GP markers vs recording waveform. Method:{" "}
             <span className="text-zinc-200">{method}</span>
+            {syncSource === "dtw" && (
+              <span className="ml-2 text-accent">(DTW active)</span>
+            )}
             {syncMap && ` · ${syncMap.points.length} sync points`}
+            {liveErrorMs != null && (
+              <span
+                className={cn(
+                  "ml-2 tabular-nums",
+                  Math.abs(liveErrorMs) < 40
+                    ? "text-accent"
+                    : Math.abs(liveErrorMs) < 100
+                      ? "text-amber-400"
+                      : "text-red-400",
+                )}
+              >
+                Error: {liveErrorMs >= 0 ? "+" : ""}
+                {liveErrorMs.toFixed(0)} ms
+              </span>
+            )}
           </p>
+          {syncWarning && (
+            <p className="mt-1 text-[11px] text-amber-300">{syncWarning}</p>
+          )}
         </div>
       </div>
 
@@ -551,12 +740,70 @@ export function SyncDebugView({ songId }: { songId: string }) {
             <canvas
               ref={canvasRef}
               width={width}
-              height={WAVE_H}
-              style={{ width, height: WAVE_H, display: "block" }}
-              onClick={(e) => seekToClientX(e.clientX)}
+              height={CANVAS_H}
+              style={{ width, height: CANVAS_H, display: "block" }}
+              onClick={(e) => seekToClientX(e.clientX, e)}
               className="cursor-crosshair"
             />
           </div>
+
+          <SyncAnchorEditor
+            songId={songId}
+            tabData={song?.tabData}
+            audioBlob={audioBlob}
+            timeline={timeline}
+            syncMap={syncMap}
+            anchors={anchors}
+            posSec={posSec}
+            onsetEnv={envRef.current}
+            selectedScoreTime={selectedScoreTime}
+            onAnchorsChange={() => setSyncVersion((v) => v + 1)}
+            onSelectScoreTime={setSelectedScoreTime}
+          />
+
+          {syncSettings?.syncMap?.diagnostics && (
+            <div className="rounded-lg border border-white/5 bg-surface-raised p-4 text-xs text-zinc-400">
+              <h3 className="mb-2 text-sm font-semibold text-zinc-200">
+                Alignment quality
+              </h3>
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-4">
+                {[
+                  ["residualRmsMs", "RMS residual", "ms", 80],
+                  ["residualMaxMs", "Max residual", "ms", 120],
+                  ["pathStability", "Path stability", "", 0.6],
+                  ["referenceRender", "Reference", "", null],
+                ].map(([key, label, unit, threshold]) => {
+                  const val = syncSettings.syncMap!.diagnostics![key as string];
+                  if (val == null) return null;
+                  const num = typeof val === "number" ? val : null;
+                  const ok =
+                    threshold == null
+                      ? true
+                      : key === "pathStability"
+                        ? num! >= (threshold as number)
+                        : num! < (threshold as number);
+                  return (
+                    <div key={key as string}>
+                      <dt className="text-zinc-500">{label}</dt>
+                      <dd
+                        className={cn(
+                          "tabular-nums",
+                          ok ? "text-accent" : "text-amber-400",
+                        )}
+                      >
+                        {String(val)}
+                        {unit ? ` ${unit}` : ""}
+                      </dd>
+                    </div>
+                  );
+                })}
+              </dl>
+              <p className="mt-2 text-[11px] text-zinc-500">
+                Green = within target (RMS &lt; 80 ms, stability ≥ 0.6). Use
+                manual anchors in suspect regions if live Error stays red.
+              </p>
+            </div>
+          )}
 
           {/* residual report */}
           {stats && (
