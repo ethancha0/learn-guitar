@@ -621,6 +621,12 @@ export interface BarTimeline {
   bars: Array<{ barIndex: number; startSec: number; occurence?: number }>;
   /** Score end time in seconds. */
   endSec: number;
+  /**
+   * Every beat across the song, seconds, bar downbeats included
+   * (`ScoreTimeline.beatSec`). Optional: without it the alphaTab conversion
+   * falls back to sampling bar downbeats only.
+   */
+  beatSec?: readonly number[];
 }
 
 export interface AlphaTabFlatSyncPoint {
@@ -693,15 +699,27 @@ export function toAlphaTabFlatSyncPoints(
 }
 
 /**
- * Emit one `FlatSyncPoint` per bar downbeat (plus score end), interpolated
- * through the warp curve. Preferred for DTW maps: musically meaningful vertices
- * without hundreds of arbitrary 1 s grid points.
+ * Largest beat grid we will hand to alphaTab. Each sync point becomes a virtual
+ * tempo segment, so a pathological score (very long, or in 32/4) falls back to
+ * bar downbeats rather than emitting tens of thousands of segments.
+ */
+const MAX_BEAT_SYNC_POINTS = 4000;
+
+/**
+ * Emit one `FlatSyncPoint` per beat (plus bar downbeats and the score end),
+ * interpolated through the warp curve. Preferred for DTW maps: musically
+ * meaningful vertices rather than hundreds of arbitrary grid points.
  *
- * Downbeats alone are NOT enough: sampling the curve only at bar starts reads it
- * on either side of a mid-bar manual anchor and never at the anchor itself, so
- * the correction never reaches alphaTab and playback keeps the old timing. Every
- * anchor vertex is therefore sampled too, along with any extra score times the
- * caller marks as required.
+ * Bar downbeats alone are too coarse. alphaTab interpolates *linearly* between
+ * consecutive sync points, so everything between two downbeats is modelled as
+ * one constant tempo — and at 170 BPM a 4/4 bar is 1.41 s, which is a long time
+ * to assume nothing moves. Sampling every beat cuts that span to ~0.35 s and
+ * lets the curve alphaTab follows actually track the DTW path it came from.
+ *
+ * Manual anchors must be sampled too: reading the curve only on either side of
+ * a mid-bar anchor and never at the anchor itself means the correction never
+ * reaches alphaTab and playback keeps the old timing. Same for any extra score
+ * times the caller marks as required.
  */
 export function toAlphaTabBarSyncPoints(
   map: SyncMap,
@@ -713,6 +731,12 @@ export function toAlphaTabBarSyncPoints(
 
   const endSec = timeline.endSec;
   const sampleTimes = bars.map((b) => b.startSec);
+  const beats = timeline.beatSec;
+  if (beats && beats.length > 0 && beats.length <= MAX_BEAT_SYNC_POINTS) {
+    for (const t of beats) {
+      if (Number.isFinite(t)) sampleTimes.push(t);
+    }
+  }
   if (endSec > sampleTimes[sampleTimes.length - 1] + EPS) {
     sampleTimes.push(endSec);
   }

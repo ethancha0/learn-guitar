@@ -54,7 +54,11 @@ with `scoreTimeToAudioTime` / `audioTimeToScoreTime`, isotonic smoothing and
   **SyncToolbox MrMsDTW** pipeline in `align/` → a dense nonlinear map that
   tracks local tempo. See `align/README.md`.
 
-The map is pushed to alphaTab as `FlatSyncPoint`s; `useBackingSync` is unchanged.
+The map is pushed to alphaTab as `FlatSyncPoint`s, sampled at every bar downbeat
+**and every beat** — alphaTab interpolates linearly between consecutive points,
+so beat spacing is what bounds cursor drift inside a bar (at 170 BPM a 4/4 bar
+is 1.41 s, which is a long time to assume constant tempo). `useBackingSync` is
+unchanged.
 Persisted per song in `learn-bass.audio-sync` (`AudioSyncSettings.syncMap`).
 Speed changes keep pitch (`audio.preservesPitch`) and never touch the map.
 
@@ -62,6 +66,14 @@ Speed changes keep pitch (`audio.preservesPitch`) and never touch the map.
 `features/player/data/audioClock.ts` (`AudioClock`) reads
 `AudioContext.currentTime` and answers "what score time, right now" through the
 same `SyncMap` — for future note scoring, independent of alphaTab's UI cadence.
+
+**Measuring alignment** is done offline by `align/evaluate.py`, which maps each
+notated attack through the curve and reports how far the nearest real onset in
+the recording is — plus a slip histogram in sixteenth notes, which is what
+catches a fast song whose alignment has locked onto the wrong subdivision.
+`align/sweep.py` scores a grid of DTW configurations against one song. Neither
+the panel's "Error" readout nor `residualRmsMs` measures accuracy; see
+`align/README.md`.
 
 **Diagnostics** (dev builds): the transport's activity icon opens a panel with
 the score→audio warping curve, live alignment error, and a **Run DTW alignment**

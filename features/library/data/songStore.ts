@@ -113,6 +113,21 @@ export function setPreferredTrackIndex(songId: string, index: number): void {
   window.localStorage.setItem(PREFERRED_TRACK_KEY, JSON.stringify(map));
 }
 
+// --- Notation display (global) -----------------------------------------------
+
+const TAB_ONLY_KEY = "learn-bass.tab-only";
+
+/** Whether the score is rendered as tablature only (standard notation hidden). */
+export function getTabOnly(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(TAB_ONLY_KEY) === "1";
+}
+
+export function setTabOnly(value: boolean): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(TAB_ONLY_KEY, value ? "1" : "0");
+}
+
 // --- Audio sync settings (per song) ----------------------------------------------
 
 export const AUDIO_SYNC_KEY = "learn-bass.audio-sync";

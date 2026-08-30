@@ -8,3 +8,5 @@ next-env.d.ts
 .env*
 /align/.venv
 /align/**/__pycache__
+/align/fixtures
+/align/.cache

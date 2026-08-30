@@ -7,14 +7,21 @@ production. In dev, `POST /api/align` shells out to the two scripts here.
 
 ```
 score.gp ──▶ gp-to-midi.mjs ──▶ score.mid + bars.json      (alphaTab, same parser as playback)
-                                     │
+                                     │                     (bars + beat grid + tempo)
 recording.mp3 ───────────────────────┼──▶ align.py ──▶ sync.json
                                      │      • fluidsynth: score.mid → ref.wav
                                      │      • librosa @ 22.05 kHz mono
                                      │      • SyncToolbox: quantized chroma + DLNCO onsets
                                      │      • sync_via_mrmsdtw → strictly-monotone warp path
-                                     └──────• resample → {scoreTime, audioTime} + alphaTab FlatSyncPoints
+                                     └──────• resample onto 0.25 s ∪ bars ∪ beats → {scoreTime, audioTime}
+                                            │
+                                            └──▶ evaluate.py ──▶ residual vs. real onsets
 ```
+
+The client turns `points` into alphaTab `FlatSyncPoint`s by sampling the curve
+at every bar downbeat **and every beat** (`toAlphaTabBarSyncPoints`). alphaTab
+interpolates linearly between consecutive points, so beat spacing is what bounds
+how far the cursor can drift inside a bar — at 170 BPM a 4/4 bar is 1.41 s.
 
 ## One-time setup
 
@@ -54,6 +61,113 @@ python align/align.py \
   --out  /tmp/al/sync.json
 cat /tmp/al/sync.json | python -m json.tool | head -40
 ```
+
+## Measuring accuracy
+
+Nothing else in the pipeline measures alignment. `diagnostics.residualRmsMs`
+says how far the warp curve bends away from *its own* linear fit, and the
+player's **Error** readout compares the dense map against what alphaTab does
+with its resampled copy — both can read zero while the map is a subdivision
+out. `evaluate.py` asks the only question that matters: map a notated attack
+through the curve, and how far away is the nearest real attack in the recording?
+
+```bash
+python align/evaluate.py \
+  --recording path/to/song.mp3 \
+  --bars /tmp/al/bars.json \
+  --sync /tmp/al/sync.json \
+  --midi /tmp/al/score.mid        # restricts scoring to positions the score attacks
+```
+
+```
+measured 144/144 bars @ 170 BPM (sixteenth 88.2 ms)
+  constant offset (signed median) :     11.9 ms
+  --- spread after removing it ---
+  median |residual|               :      3.0 ms
+  p90    |residual|               :      6.2 ms
+  subdivision slips (>1/2 16th)   :        0
+  slip histogram (16ths)          : {'0': 144}
+```
+
+Read it like this:
+
+- **`signedMedianMs`** is a constant lead-in error. One number fixes the whole
+  song, and the onset detector's own lag lives in here too, so it is not
+  evidence of a bad warp. Everything else is reported *after* removing it.
+- **`slipHistogram`** is the fast-song diagnostic. A healthy alignment is one
+  tall bucket at `0`. A bucket at `±1` means the path locked onto the wrong
+  subdivision — the failure that shows up as a ~90 ms error at 170 BPM and is
+  invisible in RMS-style statistics.
+
+### Fixtures and parameter sweeps
+
+Put a song on disk so tuning does not have to go through the browser:
+
+```
+align/fixtures/<name>/score.gp        (or .gp3 .gp4 .gp5 .gp7 .gpx …)
+align/fixtures/<name>/recording.mp3   (or .m4a .flac .wav)
+```
+
+`align/fixtures/` is gitignored. Then:
+
+```bash
+python align/sweep.py --fixture align/fixtures/monster --work /tmp/al
+```
+
+`sweep.py` renders the reference and extracts features **once** and reuses them
+across every configuration, so a full grid costs about one alignment plus a
+fraction of a second per row. It always includes two reference rows — `legacy`
+(the pre-tuning configuration) and `default` (what `align.py` ships today) — so
+every sweep says whether the shipped defaults are still the ones to beat.
+
+Snapped rows are scored with **hold-out**: the snapper moves points onto peaks
+of the same onset envelope `evaluate.py` measures against, so grading it at the
+positions it fitted would report a residual of zero and win on arithmetic. The
+sweep therefore scores every row at beats *excluding* the bar downbeats the
+snapper may touch, which turns the score back into a generalisation question.
+
+## Why the soundfont matters
+
+Not a nicety. Holding the recording, the DTW configuration and every downstream
+stage constant, and changing only the reference render:
+
+| reference | median \|residual\| | p90 | subdivision slips |
+| --- | --- | --- | --- |
+| `pretty_midi` sine fallback | 25.3 ms | 53.1 ms | 5 |
+| percussive (soundfont-like) | 6.2 ms | 15.3 ms | 1 |
+
+`PrettyMIDI.synthesize` returns **silence for every drum track** and pure sines
+with no attack transient for everything else, so DTW is matching a smooth,
+drumless render against a full-band mix. It is the single largest source of
+error in the pipeline. Use `--require-soundfont` in any measurement run so a
+missing soundfont fails loudly instead of quietly halving your accuracy.
+
+## Tuning notes (measured, not assumed)
+
+Two changes away from SyncToolbox's library defaults earned their place:
+
+- **`--feature-rate 100`** on songs above 140 BPM (applied automatically by
+  `--fast-profile auto`). 10 ms frames instead of 20; halved the residual spread
+  on a 170 BPM fixture at no measured runtime cost, because the pitch
+  filterbank dominates extraction and runs at the sample rate either way.
+- **`step_weights=[1.5, 1.5, 2.0]`, `threshold_rec=1e6`** — SyncToolbox's own
+  `sync_audio_audio` recommendation. Measured neutral on a clean fixture, kept
+  because it is the upstream advice and cannot hurt.
+
+Two changes that sound right for fast music but measured worse, and are
+therefore *not* applied by default (both remain flags for `sweep.py`):
+
+- Shortening the **DLNCO decay** to about one subdivision.
+- Lowering **`alpha`** to weight onsets over chroma — the most harmful single
+  change measured (0 → 5 subdivision slips on a weak reference).
+
+The case those two were meant for is dense polyphony, which a sparse fixture
+does not exercise. Re-run the sweep on real material before ruling them out.
+
+**`--snap` defaults to `off`.** The onset snapper now only de-jitters notated
+bar/beat positions, within a tempo-derived window, and only when a shift agrees
+with its neighbours — but under hold-out scoring it showed no generalisation
+benefit, so it stays off until a real song says otherwise.
 
 ## Run via the app (dev only)
 
@@ -110,10 +224,11 @@ so an anchor is honoured exactly even without re-running Python.
 | field | meaning |
 | --- | --- |
 | `status` | `ok` / `low-confidence` / `failed` — `failed` emits **no** points |
-| `points` | `[{ scoreTime, audioTime }]` seconds, strictly monotone, ~1 s grid |
-| `alphaTabFlatSyncPoints` | ready for `score.applyFlatSyncPoints(...)` |
-| `diagnostics.residualRmsMs` | how far the warp path bends away from a single-offset line |
-| `diagnostics.pathStability` | 1.0 = rock-steady local tempo; low = suspicious |
+| `points` | `[{ scoreTime, audioTime }]` seconds, strictly monotone, on a 0.25 s grid unioned with every bar downbeat and beat. The **single source of truth** — the client derives alphaTab `FlatSyncPoint`s from it |
+| `diagnostics.residualRmsMs` | how far the warp path bends away from a single-offset line. *Not* an accuracy measure — use `evaluate.py` |
+| `diagnostics.pathStability` | 1.0 = rock-steady local tempo; low = suspicious. Computed on a 1 s resampling so it stays comparable across `--grid-sec` settings |
+| `diagnostics.referenceRender` | `soundfont` or `sine-fallback` — check this first when accuracy is poor |
+| `diagnostics.snap*` | what the onset snapper did: candidates, measured, applied, rejected |
 | `diagnostics.suspectRegions` | score-time spans to review manually |
 
 `align.py` **refuses** to emit a mapping when the warp path is badly unstable

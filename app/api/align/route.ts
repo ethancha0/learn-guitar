@@ -111,6 +111,13 @@ export async function POST(request: Request) {
     ];
     if (scoreDurationSec) args.push("--score-duration-sec", String(scoreDurationSec));
     if (anchors) args.push("--anchors", anchors);
+    // Pass the soundfont explicitly rather than relying on align.py reading the
+    // env var. Without one the script silently falls back to the pretty_midi
+    // sine renderer, which renders drum tracks as silence and has no attack
+    // transients — measurably the largest single source of alignment error.
+    if (process.env.ALIGN_SOUNDFONT) {
+      args.push("--soundfont", process.env.ALIGN_SOUNDFONT);
+    }
 
     const align = await run(PYTHON, args);
 

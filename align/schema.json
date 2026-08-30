@@ -1,26 +1,65 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "sync.json — score↔audio alignment result",
+  "title": "sync.json \u2014 score\u2194audio alignment result",
   "type": "object",
-  "required": ["status", "method", "points"],
+  "required": [
+    "status",
+    "method",
+    "points"
+  ],
   "properties": {
-    "status": { "enum": ["ok", "low-confidence", "failed"] },
-    "method": { "type": "string", "examples": ["dtw:mrmsdtw", "offset"] },
-    "message": { "type": "string" },
-    "featureRate": { "type": "number", "description": "DTW feature rate, Hz" },
-    "referenceDurationSec": { "type": "number" },
-    "recordingDurationSec": { "type": "number" },
-    "scoreDurationSec": { "type": ["number", "null"] },
+    "status": {
+      "enum": [
+        "ok",
+        "low-confidence",
+        "failed"
+      ]
+    },
+    "method": {
+      "type": "string",
+      "examples": [
+        "dtw:mrmsdtw",
+        "offset"
+      ]
+    },
+    "message": {
+      "type": "string"
+    },
+    "featureRate": {
+      "type": "number",
+      "description": "DTW feature rate, Hz"
+    },
+    "referenceDurationSec": {
+      "type": "number"
+    },
+    "recordingDurationSec": {
+      "type": "number"
+    },
+    "scoreDurationSec": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
     "points": {
       "type": "array",
-      "description": "Monotone score→audio mapping, seconds, clipped to the score end. The SINGLE source of truth: the client derives alphaTab FlatSyncPoints from this (simplified + terminal-anchored). Empty when status=failed.",
+      "description": "Monotone score\u2192audio mapping, seconds, clipped to the score end. The SINGLE source of truth: the client derives alphaTab FlatSyncPoints from this (simplified + terminal-anchored). Empty when status=failed.",
       "items": {
         "type": "object",
-        "required": ["scoreTime", "audioTime"],
+        "required": [
+          "scoreTime",
+          "audioTime"
+        ],
         "properties": {
-          "scoreTime": { "type": "number" },
-          "audioTime": { "type": "number" },
-          "confidence": { "type": "number" }
+          "scoreTime": {
+            "type": "number"
+          },
+          "audioTime": {
+            "type": "number"
+          },
+          "confidence": {
+            "type": "number"
+          }
         }
       }
     },
@@ -31,28 +70,120 @@
     "diagnostics": {
       "type": "object",
       "properties": {
-        "globalTempoRatio": { "type": "number" },
-        "globalOffsetSec": { "type": "number" },
-        "residualRmsMs": { "type": "number", "description": "RMS deviation of the DTW path from its own global linear fit — how much a single-offset method would miss." },
-        "residualMaxMs": { "type": "number" },
-        "pathStability": { "type": "number", "description": "Fraction of the path whose local slope stays near the median (1.0 = rock steady)." },
+        "globalTempoRatio": {
+          "type": "number"
+        },
+        "globalOffsetSec": {
+          "type": "number"
+        },
+        "residualRmsMs": {
+          "type": "number",
+          "description": "RMS deviation of the DTW path from its own global linear fit \u2014 how much a single-offset method would miss."
+        },
+        "residualMaxMs": {
+          "type": "number"
+        },
+        "pathStability": {
+          "type": "number",
+          "description": "Fraction of the path whose local slope stays near the median (1.0 = rock steady)."
+        },
         "referenceRender": {
           "type": "string",
-          "enum": ["soundfont", "sine-fallback", "unknown"],
+          "enum": [
+            "soundfont",
+            "sine-fallback",
+            "unknown"
+          ],
           "description": "How the MIDI reference was rendered for DTW."
         },
-        "snapMaxMs": { "type": "number", "description": "Largest bar onset snap shift, ms." },
-        "snapMeanAbsMs": { "type": "number", "description": "Mean absolute bar onset snap shift, ms." },
+        "snapMaxMs": {
+          "type": "number",
+          "description": "Largest applied onset snap shift, ms (relative to the median shift)."
+        },
+        "snapMeanAbsMs": {
+          "type": "number",
+          "description": "Mean absolute applied snap shift, ms."
+        },
         "suspectRegions": {
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
-              "scoreStart": { "type": "number" },
-              "scoreEnd": { "type": "number" },
-              "reason": { "type": "string" }
+              "scoreStart": {
+                "type": "number"
+              },
+              "scoreEnd": {
+                "type": "number"
+              },
+              "reason": {
+                "type": "string"
+              }
             }
           }
+        },
+        "featureRate": {
+          "type": "integer",
+          "description": "DTW feature rate in Hz; 100 = 10 ms frames (fast-song profile)."
+        },
+        "alpha": {
+          "type": "number",
+          "description": "Chroma weight in the finest-level DTW cost; 1-alpha goes to DLNCO onsets."
+        },
+        "stepWeights": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "DTW step weights for [1,0], [0,1], [1,1]."
+        },
+        "thresholdRec": {
+          "type": "integer",
+          "description": "Max area of a MrMsDTW constraint rectangle."
+        },
+        "dlncoDecayFrames": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "DLNCO onset decay length in frames."
+        },
+        "gridSec": {
+          "type": "number",
+          "description": "Score-axis spacing of the emitted grid, before bar/beat times are unioned in."
+        },
+        "snapMode": {
+          "type": "string",
+          "enum": [
+            "off",
+            "bars",
+            "beats",
+            "on"
+          ],
+          "description": "Which musical positions the onset snapper was allowed to de-jitter."
+        },
+        "snapCandidates": {
+          "type": "integer",
+          "description": "Points that were both a musical position and carried a notated attack."
+        },
+        "snapMeasured": {
+          "type": "integer",
+          "description": "Candidates where an onset peak was actually found."
+        },
+        "snapAppliedCount": {
+          "type": "integer",
+          "description": "Candidates whose shift agreed with the local median and was applied."
+        },
+        "snapRejectedCount": {
+          "type": "integer",
+          "description": "Candidates whose shift disagreed with its neighbours (a likely wrong-subdivision snap) and was discarded."
+        },
+        "snapGlobalMedianMs": {
+          "type": "number",
+          "description": "Median raw shift, subtracted from every point so snapping never moves the song's global offset."
+        },
+        "snapWindowMs": {
+          "type": "number",
+          "description": "Half-width of the onset search, derived from the score tempo."
         }
       }
     }

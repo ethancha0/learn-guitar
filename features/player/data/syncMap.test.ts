@@ -705,3 +705,80 @@ describe("toAlphaTabFlatSyncPoints", () => {
     }
   });
 });
+
+describe("beat-level sync points", () => {
+  // 4 bars of 4/4 at 60 BPM: bars every 4 s, beats every 1 s.
+  const bars = [0, 4, 8, 12].map((startSec, barIndex) => ({
+    barIndex,
+    startSec,
+    occurence: 0,
+  }));
+  const beatSec = Array.from({ length: 16 }, (_, i) => i);
+  const timeline = { bars, endSec: 16, beatSec };
+
+  /** A curve that speeds up mid-bar, i.e. exactly what downbeats cannot see. */
+  const wobbly = () => {
+    const pts: SyncPoint[] = [];
+    for (let s = 0; s <= 16; s += 0.25) {
+      pts.push({ scoreTime: s, audioTime: s + 0.2 * Math.sin(s * Math.PI / 2) });
+    }
+    return SyncMap.fromPoints(pts);
+  };
+
+  it("samples every beat, not just bar downbeats", () => {
+    const withBeats = toAlphaTabBarSyncPoints(wobbly(), timeline);
+    const barsOnly = toAlphaTabBarSyncPoints(wobbly(), { bars, endSec: 16 });
+    expect(barsOnly).toHaveLength(5); // 4 downbeats + score end
+    expect(withBeats).toHaveLength(17); // 16 beats + score end
+  });
+
+  it("tracks the curve between downbeats", () => {
+    const map = wobbly();
+    const points = toAlphaTabBarSyncPoints(map, timeline);
+    // Beat 3 of bar 1 is score time 6 s; the map bends well away from the
+    // straight line a downbeat-only conversion would draw across bar 1.
+    const hit = points.find(
+      (p) => p.barIndex === 1 && Math.abs(p.barPosition - 0.5) < 1e-6,
+    );
+    expect(hit).toBeDefined();
+    expect(hit!.millisecondOffset).toBe(
+      Math.round(map.scoreTimeToAudioTime(6) * 1000),
+    );
+  });
+
+  it("stays strictly increasing", () => {
+    const points = toAlphaTabBarSyncPoints(wobbly(), timeline);
+    for (let i = 1; i < points.length; i++) {
+      expect(points[i].millisecondOffset).toBeGreaterThan(
+        points[i - 1].millisecondOffset,
+      );
+      const sameBar =
+        points[i].barIndex === points[i - 1].barIndex &&
+        points[i].barOccurence === points[i - 1].barOccurence;
+      if (sameBar) {
+        expect(points[i].barPosition).toBeGreaterThan(points[i - 1].barPosition);
+      }
+    }
+  });
+
+  it("still lands a mid-bar anchor exactly", () => {
+    const pts: SyncPoint[] = [];
+    for (let s = 0; s <= 16; s += 1) pts.push({ scoreTime: s, audioTime: s });
+    const map = SyncMap.fromPoints(pts).withAnchor(9.4, 10.15);
+    const points = toAlphaTabBarSyncPoints(map, timeline);
+    const hit = points.find(
+      (p) => p.barIndex === 2 && Math.abs(p.barPosition - 0.35) < 1e-6,
+    );
+    expect(hit?.millisecondOffset).toBe(10150);
+  });
+
+  it("falls back to downbeats when the beat grid is implausibly large", () => {
+    const huge = Array.from({ length: 4001 }, (_, i) => i * 0.004);
+    const points = toAlphaTabBarSyncPoints(wobbly(), {
+      bars,
+      endSec: 16,
+      beatSec: huge,
+    });
+    expect(points).toHaveLength(5);
+  });
+});

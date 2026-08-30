@@ -10,6 +10,7 @@ import {
   Loader2,
   SlidersHorizontal,
   Activity,
+  Music,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
@@ -18,6 +19,8 @@ import { base64ToBytes } from "@/features/library/data/tabFile";
 import {
   getPreferredTrackIndex,
   setPreferredTrackIndex,
+  getTabOnly,
+  setTabOnly,
   AUDIO_SYNC_KEY,
   AUDIO_SYNC_EVENT,
   getAudioSync,
@@ -164,6 +167,9 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   const backingAudioRef = useRef<HTMLAudioElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const apiRef = useRef<any>(null);
+  // The loaded alphaTab module, kept for its enums after setup.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const alphaTabRef = useRef<any>(null);
   // Read by the position listener so a drag doesn't fight the playhead.
   const scrubbingRef = useRef(false);
   const offsetPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -187,6 +193,9 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   const [trackNames, setTrackNames] = useState<string[]>([]);
   const [tuning, setTuning] = useState<string>("");
   const [selectedTrack, setSelectedTrack] = useState(0);
+  // Read from localStorage after mount so the server and client agree on the
+  // first render; the renderer itself is configured from the stored value.
+  const [tabOnly, setTabOnlyState] = useState(false);
 
   // Recording + calibration state
   const [mixerOpen, setMixerOpen] = useState(false);
@@ -317,6 +326,7 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
       try {
         const alphaTab = await import("@coderline/alphatab");
         if (disposed || !hostRef.current) return;
+        alphaTabRef.current = alphaTab;
 
         // Turbopack rewrites `import.meta.url` inside alphaTab's ESM build so it
         // fails to recognise itself as a browser module, then falls back to a
@@ -351,6 +361,11 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
             // Render the whole sheet up front; the lazy viewport-based renderer
             // draws nothing inside this fixed-height scroll container.
             enableLazyLoading: false,
+          },
+          display: {
+            staveProfile: getTabOnly()
+              ? alphaTab.StaveProfile.Tab
+              : alphaTab.StaveProfile.Default,
           },
           player: {
             // The imported mp3 is the clock; alphaTab follows it and its own
@@ -435,9 +450,29 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
         /* noop */
       }
       apiRef.current = null;
+      alphaTabRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabData, songId]);
+
+  useEffect(() => {
+    setTabOnlyState(getTabOnly());
+  }, []);
+
+  function toggleTabOnly() {
+    const next = !tabOnly;
+    setTabOnlyState(next);
+    setTabOnly(next);
+
+    const api = apiRef.current;
+    const alphaTab = alphaTabRef.current;
+    if (!api || !alphaTab) return;
+    api.settings.display.staveProfile = next
+      ? alphaTab.StaveProfile.Tab
+      : alphaTab.StaveProfile.Default;
+    api.updateSettings();
+    api.render();
+  }
 
   // Load the imported mp3 backing track + persisted per-song settings.
   useEffect(() => {
@@ -643,6 +678,10 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
             startSec: b.scoreTimeSec,
           })),
           endSec: tl.endSec,
+          // Beat-level sync points: alphaTab interpolates linearly between
+          // consecutive points, so bar downbeats alone leave a whole 1.4 s bar
+          // (at 170 BPM) modelled as one constant tempo.
+          beatSec: tl.beatSec,
         });
       })
       .catch((err) =>
@@ -1093,6 +1132,18 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
           onClick={toggleLoop}
         >
           <Repeat className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Tab only (hide standard notation)"
+          title="Tab only (hide standard notation)"
+          aria-pressed={tabOnly}
+          disabled={status !== "ready"}
+          className={cn(tabOnly && "text-accent")}
+          onClick={toggleTabOnly}
+        >
+          <Music className="h-4 w-4" />
         </Button>
         <Button
           variant="ghost"
