@@ -99,6 +99,41 @@ Read it like this:
   subdivision — the failure that shows up as a ~90 ms error at 170 BPM and is
   invisible in RMS-style statistics.
 
+### Measuring playback itself, not just the map
+
+`evaluate.py` scores the curve in `sync.json`. It cannot see what alphaTab does
+with that curve, and that turned out to be its own error source: alphaTab builds
+its score clock by accumulating `MidiUtils.ticksToMillis()` once per interval
+between sync points, and that helper truncates to whole milliseconds. One point
+per beat at 170 BPM loses 0.941 ms every beat — a dead-straight 2.67 ms/s drift,
+−541 ms by the end of a 3:23 song, four times worse than bar-level points
+because there are four beats in a bar.
+
+`probe-playback.mjs` reproduces alphaTab's playback math offline
+(`MidiFileGenerator._processBarTimeWithSyncPoints` plus
+`MidiFileSequencer.mainTimePositionFromBackingTrack`) and separates the layers:
+
+```bash
+node --experimental-transform-types --import ./align/ts-resolve.mjs \
+  align/probe-playback.mjs \
+  --gp align/fixtures/monster/monster.gp \
+  --bars /tmp/al/bars.json --sync /tmp/al/sync.json \
+  --out /tmp/al/drift.json          # --no-compensate / --grid bars for comparisons
+```
+
+It reports `bars.json` against alphaTab's own tick model, the raw DTW path
+against the map the player builds from it, and the position alphaTab actually
+reports at every beat. It also writes `sync-effective.json` — the same shape as
+`sync.json`, holding the mapping playback *really* implements — so `evaluate.py`
+scores real playback against real onsets. `plot-drift.py` draws all of it:
+accumulating error is a ramp, a DTW path slip is a step, bad anchors oscillate.
+
+`SyncMap`'s `compensateFlatSyncPoints` cancels the truncation (a point's
+`synthTime` depends only on ticks and tempo, so it is read back after
+`applyFlatSyncPoints` and the offsets re-derived against it). On the 170 BPM
+fixture that takes playback from median 38.9 ms / p90 97.7 ms / 200 subdivision
+slips to 7.0 / 51.6 / 77 — indistinguishable from the map's own quality.
+
 ### Fixtures and parameter sweeps
 
 Put a song on disk so tuning does not have to go through the browser:

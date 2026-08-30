@@ -698,6 +698,68 @@ export function toAlphaTabFlatSyncPoints(
   return out;
 }
 
+/** One entry of `MidiFileGenerator.generateSyncPoints(score)`. */
+export interface GeneratedSyncPoint {
+  masterBarIndex: number;
+  masterBarOccurence: number;
+  synthTick: number;
+  /** Score position of this point in alphaTab's own accumulated milliseconds. */
+  synthTime: number;
+}
+
+/**
+ * Re-derive each point's audio offset from the score time alphaTab *believes*
+ * the point sits at, rather than the one we sampled the curve at.
+ *
+ * alphaTab builds its score clock in `_processBarTimeWithSyncPoints` by
+ * accumulating `MidiUtils.ticksToMillis()` once per interval between sync
+ * points — and that helper truncates to whole milliseconds. One point per beat
+ * at 170 BPM means 352.941 ms is banked as 352, losing 0.941 ms every beat.
+ * The cursor's other time base (`MidiFileSequencer.createStateFromFile`) is
+ * exact float, so the two separate at a constant 2.67 ms/s: measured at −541 ms
+ * by the end of a 3:23 song, dead straight, and four times worse than bar-level
+ * points precisely because there are four beats in a bar.
+ *
+ * A point's `synthTime` depends only on ticks and tempo — never on the offset
+ * we send — so it can be read back after `applyFlatSyncPoints` and the offset
+ * recomputed against it. Evaluating the curve at alphaTab's belief makes the
+ * two timelines agree wherever a point exists, which is every beat. One pass is
+ * exact; re-applying does not move `synthTime` again.
+ *
+ * Points are matched to generated ones by (bar, occurrence) and then in order
+ * within the bar, so an extra terminal point appended by alphaTab is ignored.
+ */
+export function compensateFlatSyncPoints(
+  points: readonly AlphaTabFlatSyncPoint[],
+  generated: readonly GeneratedSyncPoint[],
+  map: SyncMap,
+): AlphaTabFlatSyncPoint[] {
+  if (points.length === 0 || generated.length === 0) return [...points];
+
+  const byBar = new Map<string, GeneratedSyncPoint[]>();
+  for (const g of [...generated].sort((a, b) => a.synthTick - b.synthTick)) {
+    const key = `${g.masterBarIndex}:${g.masterBarOccurence}`;
+    const list = byBar.get(key);
+    if (list) list.push(g);
+    else byBar.set(key, [g]);
+  }
+
+  const seen = new Map<string, number>();
+  return points.map((p) => {
+    const key = `${p.barIndex}:${p.barOccurence}`;
+    const i = seen.get(key) ?? 0;
+    seen.set(key, i + 1);
+    const g = byBar.get(key)?.[i];
+    if (!g || !Number.isFinite(g.synthTime)) return p;
+    return {
+      ...p,
+      millisecondOffset: Math.round(
+        map.scoreTimeToAudioTime(g.synthTime / 1000) * 1000,
+      ),
+    };
+  });
+}
+
 /**
  * Largest beat grid we will hand to alphaTab. Each sync point becomes a virtual
  * tempo segment, so a pathological score (very long, or in 32/4) falls back to
