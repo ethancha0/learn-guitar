@@ -27,7 +27,7 @@ export default function PlayerPage({
     // deciding a song truly doesn't exist.
     if (!hydrated) {
       return (
-        <div className="flex min-h-[calc(100dvh-3rem)] items-center justify-center text-sm text-zinc-500">
+        <div className="flex flex-1 items-center justify-center text-sm text-zinc-500">
           Loading song…
         </div>
       );
@@ -36,21 +36,23 @@ export default function PlayerPage({
   }
 
   return (
-    <div className="flex min-h-[calc(100dvh-3rem)] flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <Link
-            href="/library"
-            className="inline-flex items-center gap-1 text-xs text-zinc-400 hover:text-zinc-200"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Library
-          </Link>
-          <h1 className="mt-1 text-lg font-semibold">{song.title}</h1>
-          <p className="text-sm text-zinc-400">
-            {song.artist} · {song.bpm} BPM
-          </p>
-        </div>
+    <div className="flex min-h-0 flex-1 flex-col gap-2 md:gap-4">
+      {/* On phones the song header collapses to a single line so the score
+          keeps the vertical space. */}
+      <div className="flex min-w-0 items-baseline gap-2 md:block">
+        <Link
+          href="/library"
+          className="inline-flex shrink-0 items-center gap-1 text-xs text-zinc-400 hover:text-zinc-200"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Library</span>
+        </Link>
+        <h1 className="mt-0 min-w-0 flex-1 truncate text-base font-semibold md:mt-1 md:text-lg">
+          {song.title}
+        </h1>
+        <p className="shrink-0 truncate text-xs text-zinc-400 md:text-sm">
+          {song.artist} · {song.bpm} BPM
+        </p>
       </div>
 
       {song.tabData ? (
@@ -61,7 +63,11 @@ export default function PlayerPage({
           <TransportBar durationSec={song.durationSec} />
         </>
       )}
-      <FeedbackPanel grade={mockGrade} />
+
+      {/* Mock scoring readout — not worth phone screen space yet. */}
+      <div className="hidden md:block">
+        <FeedbackPanel grade={mockGrade} />
+      </div>
     </div>
   );
 }

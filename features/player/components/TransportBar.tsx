@@ -16,7 +16,7 @@ export function TransportBar({ durationSec }: { durationSec: number }) {
   const [state, setState] = useState(defaultPlaybackState);
 
   return (
-    <div className="flex items-center gap-4 rounded-lg border border-white/5 bg-surface-raised px-4 py-3">
+    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-white/5 bg-surface-raised px-3 py-3 md:gap-4 md:px-4">
       <Button
         variant="ghost"
         size="icon"
@@ -34,7 +34,7 @@ export function TransportBar({ durationSec }: { durationSec: number }) {
         {state.isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
       </Button>
 
-      <div className="flex flex-1 items-center gap-3 text-xs text-zinc-400">
+      <div className="order-last flex w-full min-w-[10rem] items-center gap-3 text-xs text-zinc-400 md:order-none md:w-auto md:flex-1">
         <span className="tabular-nums">{formatDuration(state.positionSec)}</span>
         <div className="h-1 flex-1 overflow-hidden rounded-full bg-surface-overlay">
           <div
@@ -46,7 +46,7 @@ export function TransportBar({ durationSec }: { durationSec: number }) {
       </div>
 
       <label className="flex items-center gap-1 text-xs text-zinc-400">
-        Speed
+        <span className="hidden sm:inline">Speed</span>
         <Select
           value={state.speed}
           onChange={(e) => setState((s) => ({ ...s, speed: Number(e.target.value) }))}
