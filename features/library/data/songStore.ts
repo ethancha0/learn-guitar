@@ -39,7 +39,11 @@ function write(next: ImportedSong[]): void {
 }
 
 export function addImportedSong(song: ImportedSong): void {
-  write([song, ...read()]);
+  write([song, ...read().filter((s) => s.id !== song.id)]);
+}
+
+export function hasImportedSong(id: string): boolean {
+  return read().some((s) => s.id === id);
 }
 
 // --- React binding -------------------------------------------------------------
@@ -75,10 +79,15 @@ export function useImportedSongs(): ImportedSong[] {
   return useSyncExternalStore(subscribe, getImportedSnapshot, () => EMPTY);
 }
 
-/** Seed songs plus everything the user has imported (imported first). */
+/**
+ * Everything the user has imported (newest first) plus any bundled song that
+ * hasn't been installed into the store yet, so the library isn't empty while
+ * the bundled assets are still downloading.
+ */
 export function useAllSongs(): Song[] {
   const imported = useImportedSongs();
-  return [...imported, ...seedSongs];
+  const installed = new Set(imported.map((s) => s.id));
+  return [...imported, ...seedSongs.filter((s) => !installed.has(s.id))];
 }
 
 export function useSongById(id: string): Song | undefined {

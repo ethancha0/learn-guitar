@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { AppShell } from "@/components/layout/AppShell";
+import { BundledSongsLoader } from "@/features/library/components/BundledSongsLoader";
 
 export const metadata: Metadata = {
   title: "Learn Bass",
@@ -23,6 +24,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
+        <BundledSongsLoader />
         <AppShell>{children}</AppShell>
       </body>
     </html>
