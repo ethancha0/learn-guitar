@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Play,
   Pause,
@@ -9,6 +9,7 @@ import {
   Printer,
   Loader2,
   SlidersHorizontal,
+  Activity,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
@@ -19,14 +20,30 @@ import {
   setPreferredTrackIndex,
   getAudioSync,
   patchAudioSync,
-  type SyncPoint,
+  type StoredSyncMap,
 } from "@/features/library/data/songStore";
 import { getBackingAudio } from "@/features/player/data/audioStore";
-import { useBackingSync, setPreservesPitch } from "@/features/player/data/backingSync";
-import { estimateLeadInMs } from "@/features/player/data/autoAlign";
+import {
+  useBackingSync,
+  setPreservesPitch,
+} from "@/features/player/data/backingSync";
+import {
+  SyncMap,
+  toAlphaTabFlatSyncPoints,
+  type BarTimeline,
+} from "@/features/player/data/syncMap";
+import { extractScoreTimeline } from "@/features/player/data/scoreTimeline";
+import {
+  OffsetSyncGenerator,
+  DtwSyncGenerator,
+} from "@/features/player/data/syncGenerator";
+import { installSyncDebug } from "@/features/player/data/syncDebug";
 import { Mixer, type MixerTrack } from "./Mixer";
 import { AudioOffsetControl } from "./AudioOffsetControl";
 import { BackingVolumeControl } from "./BackingVolumeControl";
+import { SyncDiagnostics } from "./SyncDiagnostics";
+
+const IS_DEV = process.env.NODE_ENV !== "production";
 
 // alphaTab's worker/worklet scripts must be same-origin, so its runtime assets
 // (script, worker, worklet, music font) are copied to `public/alphatab` and
@@ -102,19 +119,89 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
 
   // Recording + calibration state
   const [mixerOpen, setMixerOpen] = useState(false);
+  const [diagOpen, setDiagOpen] = useState(false);
   const [hasBacking, setHasBacking] = useState(false);
   const [backingVol, setBackingVol] = useState(0.85);
   const [backingMuted, setBackingMuted] = useState(false);
   const [offsetMs, setOffsetMs] = useState(0);
-  const [extraSyncPoints, setExtraSyncPoints] = useState<SyncPoint[]>([]);
+  const [storedSyncMap, setStoredSyncMap] = useState<StoredSyncMap | null>(null);
+  const [audioDurationSec, setAudioDurationSec] = useState(0);
+  const [barTimeline, setBarTimeline] = useState<BarTimeline | null>(null);
   const [autoAligning, setAutoAligning] = useState(false);
+  const [dtwRunning, setDtwRunning] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | undefined>();
 
-  const { onStateChanged, applyOffset } = useBackingSync({
+  // Score length: prefer the bar timeline (known as soon as the score loads);
+  // `playerPositionChanged.endTime` only arrives once playback/seek happens, and
+  // building the map from a 0 there silently produced a 1:1 mapping.
+  const scoreDurationSec =
+    barTimeline?.endSec ?? (durationMs > 0 ? durationMs / 1000 : 0);
+
+  /**
+   * The canonical score↔audio mapping, plus *why* it is what it is. `syncSource`
+   * is surfaced in the UI so a fallback can never be mistaken for a real
+   * alignment (previously a stored map that failed validation fell back to a
+   * straight line with no indication).
+   */
+  const { syncMap, syncSource, syncWarning } = useMemo((): {
+    syncMap: SyncMap | null;
+    syncSource: "dtw" | "offset" | "none";
+    syncWarning?: string;
+  } => {
+    let warning: string | undefined;
+
+    if (storedSyncMap && storedSyncMap.points.length >= 2) {
+      try {
+        let map = SyncMap.fromPoints(storedSyncMap.points, {
+          method: storedSyncMap.method,
+          ...(storedSyncMap.diagnostics ?? {}),
+        });
+        if (storedSyncMap.anchors?.length) {
+          map = map.withAnchors(storedSyncMap.anchors);
+        }
+        // Bound the tail so alphaTab can't stretch the last segment to a
+        // possibly-wrong media duration. See `withTerminalAnchor`.
+        if (scoreDurationSec > 0) {
+          map = map.withTerminalAnchor(
+            scoreDurationSec,
+            audioDurationSec || undefined,
+          );
+        }
+        // Feed alphaTab the shape of the curve, not every DTW frame.
+        return { syncMap: map.simplify(0.02), syncSource: "dtw" };
+      } catch (err) {
+        warning = `Stored sync map was rejected (${(err as Error).message}); using the linear offset fallback.`;
+      }
+    }
+
+    if (scoreDurationSec > 0 || audioDurationSec > 0) {
+      let map = SyncMap.fromOffset(
+        offsetMs / 1000,
+        scoreDurationSec || Math.max(audioDurationSec - offsetMs / 1000, 1),
+        audioDurationSec,
+      );
+      if (storedSyncMap?.anchors?.length) {
+        map = map.withAnchors(storedSyncMap.anchors);
+      }
+      return { syncMap: map, syncSource: "offset", syncWarning: warning };
+    }
+    return { syncMap: null, syncSource: "none", syncWarning: warning };
+  }, [storedSyncMap, offsetMs, scoreDurationSec, audioDurationSec]);
+
+  // alphaTab points are derived from the map here, so the curve the cursor
+  // follows is provably the one the clock/scoring use.
+  const flatSyncPoints = useMemo(() => {
+    if (!syncMap || !barTimeline) return null;
+    return toAlphaTabFlatSyncPoints(syncMap, barTimeline);
+  }, [syncMap, barTimeline]);
+
+  const { onStateChanged, applySync } = useBackingSync({
     songId,
     apiRef,
     audioRef: backingAudioRef,
-    offsetMs,
-    extraSyncPoints,
+    syncMap,
+    flatSyncPoints,
+    trustedAudioDurationSec: audioDurationSec || null,
     playerReady,
     audioMetaReady,
   });
@@ -273,11 +360,12 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     let url: string | undefined;
     let cancelled = false;
     let metaTimer: ReturnType<typeof setTimeout> | undefined;
+    let cleanupAudio: (() => void) | undefined;
 
     const sync = getAudioSync(songId);
     if (sync) {
       setOffsetMs(sync.offsetMs ?? 0);
-      setExtraSyncPoints(sync.syncPoints ?? []);
+      setStoredSyncMap(sync.syncMap ?? null);
       if (typeof sync.backingVol === "number") setBackingVol(sync.backingVol);
       if (typeof sync.backingMuted === "boolean")
         setBackingMuted(sync.backingMuted);
@@ -302,15 +390,28 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
       audio.load();
       setHasBacking(true);
 
-      const onMeta = () => setAudioMetaReady(true);
-      audio.addEventListener("loadedmetadata", onMeta, { once: true });
+      const readDuration = () => {
+        setAudioMetaReady(true);
+        if (Number.isFinite(audio.duration) && audio.duration > 0) {
+          setAudioDurationSec(audio.duration);
+        }
+      };
+      audio.addEventListener("loadedmetadata", readDuration);
+      // Chrome refines an estimated VBR duration later; alphaTab anchors its
+      // final segment to this number, so keep taking the latest value.
+      audio.addEventListener("durationchange", readDuration);
+      cleanupAudio = () => {
+        audio.removeEventListener("loadedmetadata", readDuration);
+        audio.removeEventListener("durationchange", readDuration);
+      };
       // Some browsers stall metadata for blob mp3s; don't block controls forever.
-      metaTimer = setTimeout(() => setAudioMetaReady(true), 4000);
+      metaTimer = setTimeout(readDuration, 4000);
     });
 
     return () => {
       cancelled = true;
       if (metaTimer) clearTimeout(metaTimer);
+      cleanupAudio?.();
       if (url) URL.revokeObjectURL(url);
     };
   }, [songId]);
@@ -318,6 +419,51 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   useEffect(() => {
     scrubbingRef.current = scrubbing;
   }, [scrubbing]);
+
+  // Bar/tempo timeline straight from the GP file. Needed to place sync points on
+  // (barIndex, barPosition) and to know the score length before playback starts.
+  useEffect(() => {
+    let cancelled = false;
+    extractScoreTimeline(base64ToBytes(tabData))
+      .then((tl) => {
+        if (cancelled) return;
+        setBarTimeline({
+          bars: tl.bars.map((b) => ({
+            barIndex: b.barIndex,
+            startSec: b.scoreTimeSec,
+          })),
+          endSec: tl.endSec,
+        });
+      })
+      .catch((err) =>
+        console.error("[AlphaTabPlayer] score timeline failed", err),
+      );
+    return () => {
+      cancelled = true;
+    };
+  }, [tabData]);
+
+  // Dev-only `window.__syncDebug()` for measuring alignment error.
+  const syncMapRef = useRef<SyncMap | null>(syncMap);
+  const positionMsRef = useRef(positionMs);
+  const syncSourceRef = useRef(syncSource);
+  const scoreDurRef = useRef(scoreDurationSec);
+  const audioDurRef = useRef(audioDurationSec);
+  syncMapRef.current = syncMap;
+  positionMsRef.current = positionMs;
+  syncSourceRef.current = syncSource;
+  scoreDurRef.current = scoreDurationSec;
+  audioDurRef.current = audioDurationSec;
+  useEffect(() => {
+    return installSyncDebug({
+      getMap: () => syncMapRef.current,
+      getScoreTimeSec: () => positionMsRef.current / 1000,
+      getAudioTimeSec: () => backingAudioRef.current?.currentTime ?? 0,
+      getSource: () => syncSourceRef.current,
+      getScoreDurationSec: () => scoreDurRef.current,
+      getAudioDurationSec: () => audioDurRef.current,
+    });
+  }, []);
 
   // Per-instrument mix (kept for a possible future synth mode; inert while the
   // recording is the clock, but harmless).
@@ -391,27 +537,117 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
       -OFFSET_CLAMP_MS,
       Math.min(OFFSET_CLAMP_MS, Math.round(nextMs)),
     );
+    const deltaSec = (clamped - offsetMs) / 1000;
     setOffsetMs(clamped);
-    applyOffset();
+
+    // When a nonlinear map is loaded, a nudge slides the whole curve (points and
+    // anchors together) so manual trim still works on top of DTW.
+    let nextMap = storedSyncMap;
+    if (storedSyncMap && deltaSec !== 0) {
+      nextMap = {
+        ...storedSyncMap,
+        points: storedSyncMap.points.map((p) => ({
+          ...p,
+          audioTime: Math.max(0, p.audioTime + deltaSec),
+        })),
+        anchors: storedSyncMap.anchors?.map((a) => ({
+          ...a,
+          audioTime: Math.max(0, a.audioTime + deltaSec),
+        })),
+      };
+      setStoredSyncMap(nextMap);
+    }
+    applySync();
+
     if (offsetPersistTimer.current) clearTimeout(offsetPersistTimer.current);
     offsetPersistTimer.current = setTimeout(() => {
-      patchAudioSync(songId, { offsetMs: clamped });
+      patchAudioSync(songId, {
+        offsetMs: clamped,
+        ...(nextMap ? { syncMap: nextMap } : {}),
+      });
     }, PERSIST_DEBOUNCE_MS);
   }
 
   function handleOffsetReset() {
-    handleOffsetChange(0);
+    setStoredSyncMap(null);
+    patchAudioSync(songId, { offsetMs: 0, syncMap: undefined });
+    setOffsetMs(0);
+    setSyncMessage(undefined);
+    applySync();
   }
 
+  /** Fast in-browser alignment: first-onset offset + global linear fit. */
   async function handleAutoAlign() {
     setAutoAligning(true);
+    setSyncMessage(undefined);
     try {
       const blob = await getBackingAudio(songId);
       if (!blob) return;
-      const leadInMs = await estimateLeadInMs(blob);
-      handleOffsetChange(leadInMs);
+      const result = await new OffsetSyncGenerator().generate({
+        songId,
+        gpBytes: base64ToBytes(tabData),
+        audioBlob: blob,
+        scoreDurationSec,
+        audioDurationSec,
+      });
+      const offsetSec =
+        (result.diagnostics?.offsetSec as number | undefined) ?? 0;
+      setStoredSyncMap(null);
+      handleOffsetChange(Math.round(offsetSec * 1000));
+      if (result.status === "low-confidence") setSyncMessage(result.message);
     } finally {
       setAutoAligning(false);
+    }
+  }
+
+  /** Offline DTW alignment via /api/align; produces a nonlinear map. */
+  async function handleDtwAlign() {
+    setDtwRunning(true);
+    setSyncMessage("Running DTW alignment… (this can take a minute)");
+    try {
+      const blob = await getBackingAudio(songId);
+      if (!blob) {
+        setSyncMessage("No recording to align against.");
+        return;
+      }
+      const result = await new DtwSyncGenerator().generate({
+        songId,
+        gpBytes: base64ToBytes(tabData),
+        audioBlob: blob,
+        scoreDurationSec,
+        audioDurationSec,
+        // Existing manual anchors are sent along so the refiner can solve
+        // between them instead of re-solving the whole song globally.
+        anchors: storedSyncMap?.anchors ?? [],
+      });
+      if (result.status === "failed" || result.points.length < 2) {
+        setSyncMessage(result.message ?? "DTW alignment failed.");
+        return;
+      }
+      const stored: StoredSyncMap = {
+        points: result.points,
+        // Manual corrections survive a re-run.
+        anchors: storedSyncMap?.anchors ?? [],
+        method: result.method,
+        status: result.status === "low-confidence" ? "low-confidence" : "ok",
+        scoreEndSec: scoreDurationSec || undefined,
+        audioDurationSec: audioDurationSec || undefined,
+        diagnostics: result.diagnostics as Record<string, unknown> | undefined,
+        createdAt: Date.now(),
+      };
+      setStoredSyncMap(stored);
+      setOffsetMs(0);
+      patchAudioSync(songId, { syncMap: stored, offsetMs: 0 });
+      applySync();
+      setSyncMessage(
+        result.status === "low-confidence"
+          ? `Aligned with low confidence — review suspicious sections. ${result.message ?? ""}`
+          : `Aligned: ${result.points.length} points via ${result.method}.`,
+      );
+    } catch (err) {
+      setSyncMessage(`DTW alignment error: ${(err as Error).message}`);
+    } finally {
+      setDtwRunning(false);
     }
   }
 
@@ -563,6 +799,18 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
         >
           <SlidersHorizontal className="h-4 w-4" />
         </Button>
+        {IS_DEV && hasBacking && (
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Sync diagnostics"
+            aria-pressed={diagOpen}
+            className={cn(diagOpen && "text-accent")}
+            onClick={() => setDiagOpen((o) => !o)}
+          >
+            <Activity className="h-4 w-4" />
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="icon"
@@ -607,6 +855,25 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
           onTrackMute={(i, m) => updateTrack(i, { muted: m })}
           onTrackSolo={(i, s) => updateTrack(i, { soloed: s })}
           onClose={() => setMixerOpen(false)}
+        />
+      )}
+
+      {IS_DEV && diagOpen && (
+        <SyncDiagnostics
+          songId={songId}
+          map={syncMap}
+          method={syncMap?.diagnostics?.method ?? "offset"}
+          syncSource={syncSource}
+          syncWarning={syncWarning}
+          scoreDurationSec={scoreDurationSec}
+          audioDurationSec={audioDurationSec}
+          appliedPointCount={flatSyncPoints?.length ?? 0}
+          scoreTimeSec={positionMs / 1000}
+          audioTimeSec={backingAudioRef.current?.currentTime ?? 0}
+          onRunDtw={handleDtwAlign}
+          dtwRunning={dtwRunning}
+          message={syncMessage}
+          onClose={() => setDiagOpen(false)}
         />
       )}
 

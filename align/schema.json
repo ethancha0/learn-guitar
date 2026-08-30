@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "sync.json — score↔audio alignment result",
+  "type": "object",
+  "required": ["status", "method", "points"],
+  "properties": {
+    "status": { "enum": ["ok", "low-confidence", "failed"] },
+    "method": { "type": "string", "examples": ["dtw:mrmsdtw", "offset"] },
+    "message": { "type": "string" },
+    "featureRate": { "type": "number", "description": "DTW feature rate, Hz" },
+    "referenceDurationSec": { "type": "number" },
+    "recordingDurationSec": { "type": "number" },
+    "scoreDurationSec": { "type": ["number", "null"] },
+    "points": {
+      "type": "array",
+      "description": "Monotone score→audio mapping, seconds, clipped to the score end. The SINGLE source of truth: the client derives alphaTab FlatSyncPoints from this (simplified + terminal-anchored). Empty when status=failed.",
+      "items": {
+        "type": "object",
+        "required": ["scoreTime", "audioTime"],
+        "properties": {
+          "scoreTime": { "type": "number" },
+          "audioTime": { "type": "number" },
+          "confidence": { "type": "number" }
+        }
+      }
+    },
+    "anchorCount": {
+      "type": "integer",
+      "description": "Number of manual anchors used; > 0 means region-wise refinement (sync_via_mrmsdtw_with_anchors) rather than a single global solve."
+    },
+    "diagnostics": {
+      "type": "object",
+      "properties": {
+        "globalTempoRatio": { "type": "number" },
+        "globalOffsetSec": { "type": "number" },
+        "residualRmsMs": { "type": "number", "description": "RMS deviation of the DTW path from its own global linear fit — how much a single-offset method would miss." },
+        "residualMaxMs": { "type": "number" },
+        "pathStability": { "type": "number", "description": "Fraction of the path whose local slope stays near the median (1.0 = rock steady)." },
+        "suspectRegions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "scoreStart": { "type": "number" },
+              "scoreEnd": { "type": "number" },
+              "reason": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

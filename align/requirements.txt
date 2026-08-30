@@ -1,0 +1,14 @@
+# Offline alignment pipeline (align.py). Python 3.9–3.11.
+#   python -m venv align/.venv && source align/.venv/bin/activate
+#   pip install -r align/requirements.txt
+synctoolbox>=1.3.2
+librosa>=0.10.1
+soundfile>=0.12.1
+numpy>=1.24,<2.1
+scipy>=1.10
+numba>=0.58
+pretty_midi>=0.2.10
+# fluidsynth is optional but strongly recommended for the reference render.
+# macOS:  brew install fluid-synth
+# Debian: apt-get install fluidsynth
+# Then point ALIGN_SOUNDFONT at a GM soundfont (e.g. GeneralUser GS, FluidR3_GM).

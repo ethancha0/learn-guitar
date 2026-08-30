@@ -117,21 +117,49 @@ export function setPreferredTrackIndex(songId: string, index: number): void {
 
 const AUDIO_SYNC_KEY = "learn-bass.audio-sync";
 
-/** Matches alphaTab's `model.FlatSyncPoint` shape without importing its types here. */
-export interface SyncPoint {
-  barIndex: number;
-  /** Position within the bar, 0–1. */
-  barPosition: number;
-  barOccurence: number;
-  /** Position within the recording, in ms. */
-  millisecondOffset: number;
+/**
+ * A persisted score↔audio mapping. `points` are `{ scoreTime, audioTime }` in
+ * seconds (see `features/player/data/syncMap.ts`); when present the player uses
+ * this instead of `offsetMs`.
+ */
+/**
+ * A manual correction: "this exact score position IS this exact recording
+ * position". Anchors are authored by the user (waveform editor / nudge) and are
+ * always applied *after* the automatic map, so they win.
+ */
+export interface SyncAnchor {
+  scoreTime: number;
+  audioTime: number;
+  /** Optional note, e.g. "chorus 2 downbeat". */
+  label?: string;
+  createdAt?: number;
+}
+
+export interface StoredSyncMap {
+  /** The automatic (DTW or offset) mapping, seconds, strictly monotone. */
+  points: Array<{ scoreTime: number; audioTime: number; confidence?: number }>;
+  /**
+   * Manual anchors layered on top of `points`. Kept separate so re-running the
+   * automatic pass never discards the user's corrections, and so the offline
+   * refiner can be told which regions are already trusted.
+   */
+  anchors?: SyncAnchor[];
+  /** e.g. "offset", "dtw:mrmsdtw", "dtw:mrmsdtw+anchors". */
+  method: string;
+  status: "ok" | "low-confidence";
+  /** Score length the map was generated against, for staleness detection. */
+  scoreEndSec?: number;
+  /** Recording length the map was generated against. */
+  audioDurationSec?: number;
+  diagnostics?: Record<string, unknown>;
+  createdAt: number;
 }
 
 export interface AudioSyncSettings {
-  /** mp3 lead-in offset in ms: the audio position where the tab's bar 0 begins. */
+  /** mp3 lead-in offset in ms — the fallback/manual mapping (offset + global fit). */
   offsetMs: number;
-  /** Reserved for future multi-point tempo-drift correction. */
-  syncPoints?: SyncPoint[];
+  /** Nonlinear score↔audio mapping (from DTW or manual anchors); preferred. */
+  syncMap?: StoredSyncMap;
   /** Persisted "original recording" channel state. */
   backingVol?: number;
   backingMuted?: boolean;

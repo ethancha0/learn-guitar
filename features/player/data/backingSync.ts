@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { SyncPoint } from "@/features/library/data/songStore";
+import type { SyncMap, AlphaTabFlatSyncPoint } from "./syncMap";
 
 /**
  * Couples an imported mp3 to alphaTab using `PlayerMode.EnabledExternalMedia`:
@@ -10,19 +10,30 @@ import type { SyncPoint } from "@/features/library/data/songStore";
  * media (play / pause / seek / rate / volume); we pump the media's current time
  * into alphaTab every animation frame while playing.
  *
+ * The score↔audio *mapping* lives in a `SyncMap`. It is pushed into alphaTab as
+ * `FlatSyncPoint`s: a single bar-0 point for the offset strategy (alphaTab's
+ * implicit end anchor then does the global linear fit), or the dense points the
+ * offline DTW pipeline precomputed for a nonlinear mapping.
+ *
  * Deliberately framework-free and untyped against alphaTab (all access via
- * `getApi()`), so `AlphaTabPlayer` stays readable and this file has no import of
- * the alphaTab module.
+ * `getApi()`), so `AlphaTabPlayer` stays readable.
  */
 
 interface BackingSyncDeps {
   getAudio: () => HTMLAudioElement | null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getApi: () => any;
-  /** Live read so calibration nudges take effect immediately. */
-  getOffsetMs: () => number;
-  /** Extra tempo-drift points beyond the bar-0 offset point. */
-  getExtraSyncPoints: () => SyncPoint[];
+  /** Canonical score↔audio mapping (always present). */
+  getSyncMap: () => SyncMap | null;
+  /** alphaTab points derived from the map by the caller. */
+  getFlatSyncPoints: () => AlphaTabFlatSyncPoint[] | null;
+  /**
+   * Recording length in seconds that alphaTab should anchor its final segment
+   * to. `<audio>.duration` is unreliable for VBR MP3s served from blob URLs
+   * (Chrome over-reports from the bitrate header), and alphaTab divides by it,
+   * so a decoded/known-good duration is passed in when available.
+   */
+  getTrustedAudioDurationSec: () => number | null;
 }
 
 export class BackingMediaSync {
@@ -53,7 +64,7 @@ export class BackingMediaSync {
     audio?.addEventListener("timeupdate", this.onTimeUpdate);
     audio?.addEventListener("seeked", this.onTimeUpdate);
 
-    this.applyOffset();
+    this.applySync();
     // Prime alphaTab with the current media position.
     this.pushPosition();
     return true;
@@ -87,38 +98,44 @@ export class BackingMediaSync {
   }
 
   /**
-   * Rebuild alphaTab's sync points from the current offset. A single point at
-   * bar 0 also linearly time-fits the whole tab across `[offsetMs, audioDuration]`,
-   * which absorbs a constant tempo difference between the GP file and the record.
+   * Push the current mapping into alphaTab's sync-point model.
+   *
+   * The `SyncMap` is the single source of truth: points are derived from it here
+   * rather than trusting a precomputed array, so the curve alphaTab follows is
+   * provably the same one `AudioClock` / scoring use.
    */
-  applyOffset(): void {
+  applySync(): AlphaTabFlatSyncPoint[] {
     const api = this.deps.getApi();
     const score = api?.score;
-    if (!score?.applyFlatSyncPoints) return;
+    if (!score?.applyFlatSyncPoints) return [];
 
-    const base: SyncPoint = {
-      barIndex: 0,
-      barPosition: 0,
-      barOccurence: 0,
-      millisecondOffset: Math.round(this.deps.getOffsetMs()),
-    };
-    const extra = this.deps
-      .getExtraSyncPoints()
-      .filter((p) => !(p.barIndex === 0 && p.barPosition === 0));
+    const points = this.deps.getFlatSyncPoints() ?? [];
+    if (points.length === 0) return [];
 
     try {
-      score.applyFlatSyncPoints([base, ...extra]);
+      score.applyFlatSyncPoints(points);
       api.updateSyncPoints();
+      this.appliedPoints = points;
     } catch (err) {
-      console.error("[backingSync] applyOffset failed", err);
+      console.error("[backingSync] applySync failed", err);
+      return [];
     }
+    return points;
   }
+
+  /** What was last handed to alphaTab — for the diagnostics view. */
+  appliedPoints: AlphaTabFlatSyncPoint[] = [];
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private buildHandler(): any {
     const getAudio = this.deps.getAudio;
+    const getTrusted = this.deps.getTrustedAudioDurationSec;
     return {
       get backingTrackDuration(): number {
+        const trusted = getTrusted();
+        if (trusted != null && Number.isFinite(trusted) && trusted > 0) {
+          return trusted * 1000;
+        }
         const a = getAudio();
         return a && Number.isFinite(a.duration) ? a.duration * 1000 : 0;
       },
@@ -210,39 +227,44 @@ interface UseBackingSyncArgs {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   apiRef: React.MutableRefObject<any>;
   audioRef: React.RefObject<HTMLAudioElement | null>;
-  offsetMs: number;
-  extraSyncPoints: SyncPoint[];
+  syncMap: SyncMap | null;
+  flatSyncPoints: AlphaTabFlatSyncPoint[] | null;
+  trustedAudioDurationSec: number | null;
   playerReady: boolean;
   audioMetaReady: boolean;
 }
 
 /**
  * Owns a `BackingMediaSync` for the current song. `attach()` runs once both the
- * alphaTab player and the audio metadata are ready; `applyOffset()` re-runs when
- * the calibration offset changes.
+ * alphaTab player and the audio metadata are ready; `applySync()` re-runs when
+ * the mapping changes.
  */
 export function useBackingSync({
   songId,
   apiRef,
   audioRef,
-  offsetMs,
-  extraSyncPoints,
+  syncMap,
+  flatSyncPoints,
+  trustedAudioDurationSec,
   playerReady,
   audioMetaReady,
 }: UseBackingSyncArgs) {
   const controllerRef = useRef<BackingMediaSync | null>(null);
-  const offsetRef = useRef(offsetMs);
-  const extraRef = useRef(extraSyncPoints);
-  offsetRef.current = offsetMs;
-  extraRef.current = extraSyncPoints;
+  const mapRef = useRef(syncMap);
+  const flatRef = useRef(flatSyncPoints);
+  const durRef = useRef(trustedAudioDurationSec);
+  mapRef.current = syncMap;
+  flatRef.current = flatSyncPoints;
+  durRef.current = trustedAudioDurationSec;
 
   // One controller per song.
   useEffect(() => {
     const controller = new BackingMediaSync({
       getAudio: () => audioRef.current,
       getApi: () => apiRef.current,
-      getOffsetMs: () => offsetRef.current,
-      getExtraSyncPoints: () => extraRef.current,
+      getSyncMap: () => mapRef.current,
+      getFlatSyncPoints: () => flatRef.current,
+      getTrustedAudioDurationSec: () => durRef.current,
     });
     controllerRef.current = controller;
     return () => {
@@ -258,7 +280,6 @@ export function useBackingSync({
     const controller = controllerRef.current;
     if (!controller) return;
     if (!controller.attach()) {
-      // player.output not up yet — retry on the next frame a few times.
       let tries = 0;
       const id = setInterval(() => {
         if (controller.attach() || ++tries > 30) clearInterval(id);
@@ -267,15 +288,15 @@ export function useBackingSync({
     }
   }, [playerReady, audioMetaReady, songId]);
 
-  // Re-apply sync points when the calibration offset changes.
+  // Re-apply when the mapping changes.
   useEffect(() => {
-    if (playerReady && audioMetaReady) controllerRef.current?.applyOffset();
-  }, [offsetMs, extraSyncPoints, playerReady, audioMetaReady]);
+    if (playerReady && audioMetaReady) controllerRef.current?.applySync();
+  }, [syncMap, flatSyncPoints, trustedAudioDurationSec, playerReady, audioMetaReady]);
 
   return {
     controllerRef,
     onStateChanged: (playing: boolean) =>
       controllerRef.current?.onStateChanged(playing),
-    applyOffset: () => controllerRef.current?.applyOffset(),
+    applySync: () => controllerRef.current?.applySync(),
   };
 }
