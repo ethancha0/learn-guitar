@@ -35,10 +35,16 @@ interface Deps {
   getSource?: () => "dtw" | "offset" | "none";
   getScoreDurationSec?: () => number;
   getAudioDurationSec?: () => number;
+  /**
+   * Reads the sync points back out of alphaTab and diffs them against the map,
+   * which separates a lossy transfer (a code bug) from poor alignment.
+   */
+  verifyTransfer?: () => unknown;
 }
 
 const KEY = "__syncDebug";
 const PROBE_KEY = "__syncProbe";
+const VERIFY_KEY = "__syncVerify";
 
 export function installSyncDebug(deps: Deps): () => void {
   if (typeof window === "undefined" || process.env.NODE_ENV === "production") {
@@ -93,11 +99,16 @@ export function installSyncDebug(deps: Deps): () => void {
   (window as any)[KEY] = snapshot;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any)[PROBE_KEY] = probe;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any)[VERIFY_KEY] =
+    deps.verifyTransfer ?? (() => ({ error: "no verifier installed" }));
   return () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     delete (window as any)[KEY];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     delete (window as any)[PROBE_KEY];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (window as any)[VERIFY_KEY];
   };
 }
 

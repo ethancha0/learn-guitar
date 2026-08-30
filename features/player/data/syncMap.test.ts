@@ -445,6 +445,150 @@ describe("SyncMap.withAnchors", () => {
     expect(map.scoreTimeToAudioTime(82.14)).toBeCloseTo(83.72, 6);
     expect(map.scoreTimeToAudioTime(150)).toBeCloseTo(152.5, 6);
   });
+
+  it("tags anchor points so later transforms can protect them", () => {
+    const map = SyncMap.fromPoints([
+      { scoreTime: 0, audioTime: 0 },
+      { scoreTime: 100, audioTime: 100 },
+    ]).withAnchor(50, 51);
+    expect(map.anchorScoreTimes()).toEqual([50]);
+  });
+
+  it("re-fits the neighbourhood instead of spiking to the anchor and back", () => {
+    // A dense automatic curve: leaving its points in place around the anchor
+    // makes the map dive to the correction and jump straight back, which reads
+    // as the cursor sprinting then crawling.
+    const pts: SyncPoint[] = [];
+    for (let s = 0; s <= 100; s += 0.5) pts.push({ scoreTime: s, audioTime: s });
+    const map = SyncMap.fromPoints(pts).withAnchor(50, 50.4);
+
+    expect(map.scoreTimeToAudioTime(50)).toBeCloseTo(50.4, 6);
+    // No automatic vertex survives inside the window, so the slope either side
+    // of the anchor is constant rather than alternating fast/slow.
+    expect(map.slopeAtScoreTime(49)).toBeCloseTo(map.slopeAtScoreTime(49.5), 6);
+    expect(map.slopeAtScoreTime(51)).toBeCloseTo(map.slopeAtScoreTime(51.5), 6);
+    // ...and the curve is untouched well outside it.
+    expect(map.scoreTimeToAudioTime(10)).toBeCloseTo(10, 6);
+    expect(map.scoreTimeToAudioTime(90)).toBeCloseTo(90, 6);
+  });
+
+  it("never lets one anchor's window erase a neighbouring anchor", () => {
+    // The real case: three consecutive notes corrected within a single bar.
+    const pts: SyncPoint[] = [];
+    for (let s = 0; s <= 300; s += 1.8) pts.push({ scoreTime: s, audioTime: s });
+    const anchors = [
+      { scoreTime: 257.54, audioTime: 257.9 },
+      { scoreTime: 257.88, audioTime: 258.24 },
+      { scoreTime: 258.23, audioTime: 258.59 },
+    ];
+    const map = SyncMap.fromPoints(pts).withAnchors(anchors);
+
+    expect(map.anchorScoreTimes()).toHaveLength(3);
+    for (const a of anchors) {
+      expect(map.scoreTimeToAudioTime(a.scoreTime)).toBeCloseTo(a.audioTime, 6);
+    }
+  });
+});
+
+describe("manual anchors survive the road to playback", () => {
+  // 4 bars of 4 s. The anchor deliberately sits mid-bar, which is where a
+  // per-note correction lands and where bar-downbeat sampling used to lose it.
+  const timeline = {
+    bars: [
+      { barIndex: 0, startSec: 0, occurence: 0 },
+      { barIndex: 1, startSec: 4, occurence: 0 },
+      { barIndex: 2, startSec: 8, occurence: 0 },
+      { barIndex: 3, startSec: 12, occurence: 0 },
+    ],
+    endSec: 16,
+  };
+
+  const anchored = () => {
+    const pts: SyncPoint[] = [];
+    for (let s = 0; s <= 16; s += 1) pts.push({ scoreTime: s, audioTime: s });
+    return SyncMap.fromPoints(pts).withAnchor(9.4, 10.15);
+  };
+
+  it("reaches alphaTab through the bar-level conversion", () => {
+    const map = anchored();
+    const pts = toAlphaTabBarSyncPoints(map, timeline);
+    // Bar 2 spans 8..12s, so the anchor is at ratio (9.4 - 8) / 4 = 0.35.
+    const hit = pts.find(
+      (p) => p.barIndex === 2 && Math.abs(p.barPosition - 0.35) < 1e-6,
+    );
+    expect(hit).toBeDefined();
+    expect(hit!.millisecondOffset).toBe(10150);
+  });
+
+  it("survives simplification on the offset path", () => {
+    const map = anchored();
+    const simplified = map.simplify(0.02);
+    expect(simplified.scoreTimeToAudioTime(9.4)).toBeCloseTo(10.15, 6);
+
+    const pts = toAlphaTabFlatSyncPoints(simplified, timeline);
+    const hit = pts.find(
+      (p) => p.barIndex === 2 && Math.abs(p.barPosition - 0.35) < 1e-6,
+    );
+    expect(hit?.millisecondOffset).toBe(10150);
+  });
+
+  it("keeps a correction smaller than the simplify tolerance", () => {
+    const pts: SyncPoint[] = [];
+    for (let s = 0; s <= 16; s += 1) pts.push({ scoreTime: s, audioTime: s });
+    // 10 ms — half the 20 ms tolerance, so plain Douglas–Peucker would drop it.
+    const map = SyncMap.fromPoints(pts).withAnchor(9.4, 9.41);
+    expect(map.simplify(0.02).scoreTimeToAudioTime(9.4)).toBeCloseTo(9.41, 6);
+  });
+
+  it("honours caller-protected score times", () => {
+    const pts: SyncPoint[] = [];
+    for (let i = 0; i <= 200; i++) pts.push({ scoreTime: i, audioTime: i * 1.02 });
+    const map = SyncMap.fromPoints(pts);
+    const simplified = map.simplify(0.02, { protectedScoreTimes: [37] });
+    expect(simplified.points.some((p) => p.scoreTime === 37)).toBe(true);
+  });
+});
+
+describe("SyncMap.sanitize protects manual anchors", () => {
+  it("does not trim an end-of-song anchor as a steep tail", () => {
+    const pts: SyncPoint[] = [];
+    for (let s = 0; s <= 250; s += 1) pts.push({ scoreTime: s, audioTime: s });
+    // A late correction pushing audio on by 2 s over 0.2 s of score: a local
+    // slope of 10 against a median of 1, which the tail trim used to eat.
+    const map = SyncMap.fromPoints(pts).withAnchor(250.2, 252);
+    const { map: clean } = map.sanitize({
+      scoreEndSec: 251,
+      audioDurationSec: 261,
+    });
+    expect(clean.anchorScoreTimes()).toContain(250.2);
+    expect(clean.scoreTimeToAudioTime(250.2)).toBeCloseTo(252, 6);
+  });
+
+  it("keeps an anchor past an under-reported recording length and says so", () => {
+    const pts: SyncPoint[] = [];
+    for (let s = 0; s <= 250; s += 10) pts.push({ scoreTime: s, audioTime: s });
+    const map = SyncMap.fromPoints(pts).withAnchor(255, 258);
+    const { map: clean, repairs } = map.sanitize({
+      scoreEndSec: 256,
+      // The <audio> element under-reports: the anchor sits past this.
+      audioDurationSec: 257,
+    });
+    expect(clean.scoreTimeToAudioTime(255)).toBeCloseTo(258, 6);
+    expect(repairs.join(" ")).toMatch(/kept 1 manual anchor/);
+  });
+
+  it("still drops automatic points that run past the recording", () => {
+    const map = SyncMap.fromPoints([
+      { scoreTime: 0, audioTime: 0 },
+      { scoreTime: 100, audioTime: 100 },
+      { scoreTime: 110, audioTime: 400 },
+    ]);
+    const { map: clean } = map.sanitize({
+      scoreEndSec: 110,
+      audioDurationSec: 120,
+    });
+    expect(clean.audioDuration).toBeLessThanOrEqual(120);
+  });
 });
 
 describe("toAlphaTabBarSyncPoints", () => {
@@ -465,6 +609,60 @@ describe("toAlphaTabBarSyncPoints", () => {
     const pts = toAlphaTabBarSyncPoints(map, timeline);
     expect(pts.length).toBeGreaterThanOrEqual(3);
     expect(pts[0].millisecondOffset).toBe(500);
+  });
+});
+
+describe("toAlphaTabBarSyncPoints with repeats", () => {
+  // Two bars played twice: playback order is 0, 1, 0, 1. alphaTab drops any
+  // sync point whose barIndex is past the end of `score.masterBars`, so
+  // numbering these 0..3 silently unsynced the whole second pass — the cursor
+  // then raced from the last surviving point to the end of the recording.
+  const timeline = {
+    bars: [
+      { barIndex: 0, startSec: 0, occurence: 0 },
+      { barIndex: 1, startSec: 4, occurence: 0 },
+      { barIndex: 0, startSec: 8, occurence: 1 },
+      { barIndex: 1, startSec: 12, occurence: 1 },
+    ],
+    endSec: 16,
+  };
+
+  it("addresses real score bars and tags each pass with its occurrence", () => {
+    const map = SyncMap.fromPoints([
+      { scoreTime: 0, audioTime: 0 },
+      { scoreTime: 16, audioTime: 16 },
+    ]);
+    const pts = toAlphaTabBarSyncPoints(map, timeline);
+
+    // Nothing may address a bar the score does not have.
+    const scoreBarCount = 2;
+    for (const p of pts) expect(p.barIndex).toBeLessThan(scoreBarCount);
+
+    // Both passes are represented.
+    expect(pts.some((p) => p.barOccurence === 0)).toBe(true);
+    expect(pts.some((p) => p.barOccurence === 1)).toBe(true);
+
+    // The second pass keeps its own timing rather than collapsing onto the first.
+    const secondPass = pts.filter((p) => p.barOccurence === 1);
+    expect(secondPass.length).toBeGreaterThan(0);
+    expect(Math.min(...secondPass.map((p) => p.millisecondOffset))).toBeGreaterThanOrEqual(
+      8000,
+    );
+  });
+
+  it("keeps points ordered within each (barIndex, occurrence)", () => {
+    const map = SyncMap.fromPoints([
+      { scoreTime: 0, audioTime: 0 },
+      { scoreTime: 16, audioTime: 16 },
+    ]);
+    const pts = toAlphaTabBarSyncPoints(map, timeline);
+    const seen = new Map<string, number>();
+    for (const p of pts) {
+      const key = `${p.barIndex}:${p.barOccurence}`;
+      const prev = seen.get(key);
+      if (prev != null) expect(p.barPosition).toBeGreaterThan(prev);
+      seen.set(key, p.barPosition);
+    }
   });
 });
 

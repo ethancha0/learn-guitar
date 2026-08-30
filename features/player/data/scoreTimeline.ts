@@ -8,7 +8,16 @@
  */
 
 export interface BarMarker {
+  /**
+   * The bar's index *in the score*. This is what alphaTab's sync points address
+   * — NOT the position in playback order, which runs past the end of
+   * `score.masterBars` as soon as the song has a repeat.
+   */
   barIndex: number;
+  /** 0 on the first pass through this bar, 1 on the first repeat, and so on. */
+  occurence: number;
+  /** Position in playback order, repeats expanded. */
+  playbackIndex: number;
   scoreTimeSec: number;
   /** Beats in the bar (time-signature numerator), for optional beat markers. */
   beats: number;
@@ -18,6 +27,8 @@ export interface ScoreTimeline {
   title: string;
   tempo: number;
   bars: BarMarker[];
+  /** True when playback expands repeats, i.e. some bar is played more than once. */
+  hasRepeats: boolean;
   endSec: number;
   /** Every beat across the song, seconds — bar downbeats included. */
   beatSec: number[];
@@ -63,13 +74,24 @@ export async function extractScoreTimeline(
   // wrongly and the error accumulates toward the end of the song.
   let activeTempo = score.tempo;
 
+  // `gen.tickLookup.masterBars` is in PLAYBACK order with repeats expanded, so
+  // `i` is not the bar's index in the score. Carry the real one (and which pass
+  // we are on) — alphaTab drops any sync point whose barIndex is past the end of
+  // `score.masterBars`, which silently unsyncs everything after the first repeat.
+  const occurences = new Map<number, number>();
+
   for (let i = 0; i < masterBars.length; i++) {
     const b = masterBars[i];
-    const mb = score.masterBars[i];
+    const mb = b.masterBar ?? score.masterBars[i];
+    const barIndex = mb?.index ?? i;
+    const occurence = occurences.get(barIndex) ?? 0;
+    occurences.set(barIndex, occurence + 1);
     const numerator = mb?.timeSignatureNumerator ?? 4;
     const denominator = mb?.timeSignatureDenominator ?? 4;
     bars.push({
-      barIndex: i,
+      barIndex,
+      occurence,
+      playbackIndex: i,
       scoreTimeSec: ms / 1000,
       beats: numerator,
     });
@@ -107,6 +129,7 @@ export async function extractScoreTimeline(
     title: score.title ?? "",
     tempo: score.tempo,
     bars,
+    hasRepeats: masterBars.length > score.masterBars.length,
     endSec: ms / 1000,
     beatSec,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

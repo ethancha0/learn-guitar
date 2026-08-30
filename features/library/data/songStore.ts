@@ -116,6 +116,12 @@ export function setPreferredTrackIndex(songId: string, index: number): void {
 // --- Audio sync settings (per song) ----------------------------------------------
 
 export const AUDIO_SYNC_KEY = "learn-bass.audio-sync";
+/**
+ * Fired on `window` after any write to the sync settings. Unlike `storage` this
+ * reaches listeners in the tab that did the writing, so the player can pick up
+ * an anchor edited on the sync-debug page without a reload.
+ */
+export const AUDIO_SYNC_EVENT = "learn-bass:audio-sync-changed";
 
 /**
  * A persisted score↔audio mapping. `points` are `{ scoreTime, audioTime }` in
@@ -193,7 +199,7 @@ export function patchAudioSync(
   const current: AudioSyncSettings = map[songId] ?? { offsetMs: 0 };
   map[songId] = { ...current, ...patch };
   window.localStorage.setItem(AUDIO_SYNC_KEY, JSON.stringify(map));
-  window.dispatchEvent(new Event("learn-bass:audio-sync-changed"));
+  window.dispatchEvent(new Event(AUDIO_SYNC_EVENT));
 }
 
 function withStoredSyncMap(

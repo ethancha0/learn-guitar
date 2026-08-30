@@ -18,6 +18,7 @@ import {
   getAudioSync,
   getPreferredTrackIndex,
   upsertSyncAnchor,
+  AUDIO_SYNC_EVENT,
   type SyncAnchor,
 } from "@/features/library/data/songStore";
 import { getBackingAudio } from "@/features/player/data/audioStore";
@@ -145,10 +146,10 @@ export function SyncDebugView({ songId }: { songId: string }) {
 
   useEffect(() => {
     const bump = () => setSyncVersion((v) => v + 1);
-    window.addEventListener("learn-bass:audio-sync-changed", bump);
+    window.addEventListener(AUDIO_SYNC_EVENT, bump);
     window.addEventListener("storage", bump);
     return () => {
-      window.removeEventListener("learn-bass:audio-sync-changed", bump);
+      window.removeEventListener(AUDIO_SYNC_EVENT, bump);
       window.removeEventListener("storage", bump);
     };
   }, []);
@@ -552,6 +553,8 @@ export function SyncDebugView({ songId }: { songId: string }) {
             {method}
             {syncSource === "dtw" && " (DTW)"}
             {syncMap && ` · ${syncMap.points.length} points`}
+            {timeline?.hasRepeats &&
+              ` · repeats expanded (${timeline.bars.length} played bars)`}
           </span>
           {liveErrorMs != null && (
             <span

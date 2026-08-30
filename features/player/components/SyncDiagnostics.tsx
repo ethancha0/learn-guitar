@@ -5,7 +5,12 @@ import Link from "next/link";
 import { X, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
+import type { SyncAnchor } from "@/features/library/data/songStore";
 import type { SyncMap } from "@/features/player/data/syncMap";
+import type { SyncVerifyReport } from "@/features/player/data/syncVerify";
+
+/** An anchor counts as honoured when the live map lands this close to it. */
+const ANCHOR_TOLERANCE_MS = 20;
 
 interface SyncDiagnosticsProps {
   songId: string;
@@ -23,6 +28,10 @@ interface SyncDiagnosticsProps {
   scoreTimeSec: number;
   /** Live recording position (seconds). */
   audioTimeSec: number;
+  /** Manual corrections, so each one can be shown as honoured or not. */
+  anchors: SyncAnchor[];
+  /** Reads the sync points back out of alphaTab and compares them to the map. */
+  onVerifyTransfer: () => SyncVerifyReport | { error: string };
   onRunDtw: () => void;
   dtwRunning: boolean;
   message?: string;
@@ -45,12 +54,17 @@ export function SyncDiagnostics({
   appliedPointCount,
   scoreTimeSec,
   audioTimeSec,
+  anchors,
+  onVerifyTransfer,
   onRunDtw,
   dtwRunning,
   message,
   onClose,
 }: SyncDiagnosticsProps) {
   const [tick, setTick] = useState(0);
+  const [verify, setVerify] = useState<
+    SyncVerifyReport | { error: string } | null
+  >(null);
   const raf = useRef<number | null>(null);
 
   useEffect(() => {
@@ -218,7 +232,79 @@ export function SyncDiagnostics({
         </p>
       </div>
 
+      {/* Does the live map actually pass through the hand-placed corrections?
+          This is the check that would have caught anchors being dropped between
+          the sync-debug page and playback. */}
+      {map && anchors.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <h3 className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+            Anchors ({anchors.length})
+          </h3>
+          <table className="w-full text-left text-[11px] tabular-nums">
+            <thead className="text-zinc-500">
+              <tr>
+                <th className="py-0.5 pr-2 font-normal">Score</th>
+                <th className="py-0.5 pr-2 font-normal">Target</th>
+                <th className="py-0.5 font-normal">Map is off by</th>
+              </tr>
+            </thead>
+            <tbody className="text-zinc-300">
+              {anchors.map((a) => {
+                const landed = map.scoreTimeToAudioTime(a.scoreTime);
+                const deltaMs = (landed - a.audioTime) * 1000;
+                return (
+                  <tr key={a.scoreTime}>
+                    <td className="py-0.5 pr-2">{a.scoreTime.toFixed(2)}s</td>
+                    <td className="py-0.5 pr-2 text-zinc-100">
+                      {a.audioTime.toFixed(2)}s
+                    </td>
+                    <td
+                      className={cn(
+                        "py-0.5",
+                        Math.abs(deltaMs) <= ANCHOR_TOLERANCE_MS
+                          ? "text-accent"
+                          : "text-amber-400",
+                      )}
+                    >
+                      {deltaMs >= 0 ? "+" : ""}
+                      {deltaMs.toFixed(0)} ms
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       <div className="flex flex-col gap-1.5">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setVerify(onVerifyTransfer())}
+        >
+          Verify transfer to alphaTab
+        </Button>
+        {verify && (
+          <div className="rounded-md border border-white/10 bg-surface p-2 text-[11px] leading-snug">
+            {"error" in verify ? (
+              <p className="text-amber-300">{verify.error}</p>
+            ) : (
+              <>
+                <p
+                  className={
+                    verify.transferFaithful ? "text-accent" : "text-red-400"
+                  }
+                >
+                  {verify.pointCount} point(s) held by alphaTab · max{" "}
+                  {verify.maxAbsDeltaMs} ms / mean {verify.meanAbsDeltaMs} ms off
+                  the map
+                </p>
+                <p className="mt-1 text-zinc-400">{verify.verdict}</p>
+              </>
+            )}
+          </div>
+        )}
         <Button
           variant="outline"
           size="sm"
@@ -238,7 +324,8 @@ export function SyncDiagnostics({
           Open sync-debug page (waveform + markers + click overlay)
         </Link>
         <p className="text-[11px] leading-snug text-zinc-500">
-          Also available in the console: <code>window.__syncDebug()</code>
+          Also available in the console: <code>window.__syncDebug()</code>,{" "}
+          <code>window.__syncVerify()</code>
         </p>
       </div>
 

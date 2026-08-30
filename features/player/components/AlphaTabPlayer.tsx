@@ -19,8 +19,10 @@ import {
   getPreferredTrackIndex,
   setPreferredTrackIndex,
   AUDIO_SYNC_KEY,
+  AUDIO_SYNC_EVENT,
   getAudioSync,
   patchAudioSync,
+  type AudioSyncSettings,
   type StoredSyncMap,
 } from "@/features/library/data/songStore";
 import { getBackingAudio } from "@/features/player/data/audioStore";
@@ -35,6 +37,7 @@ import {
   type BarTimeline,
 } from "@/features/player/data/syncMap";
 import { buildPlaybackSyncMap } from "@/features/player/data/buildSyncMap";
+import { decodeAudio } from "@/features/player/data/waveform";
 import { extractScoreTimeline } from "@/features/player/data/scoreTimeline";
 import {
   OffsetSyncGenerator,
@@ -165,6 +168,9 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   const scrubbingRef = useRef(false);
   const offsetPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const backingPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // True while *we* are writing sync settings, so the same-tab change event we
+  // just caused doesn't bounce back and overwrite state a drag is still editing.
+  const selfWritingSyncRef = useRef(false);
 
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [playerReady, setPlayerReady] = useState(false);
@@ -190,8 +196,19 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   const [backingMuted, setBackingMuted] = useState(false);
   const [offsetMs, setOffsetMs] = useState(0);
   const [storedSyncMap, setStoredSyncMap] = useState<StoredSyncMap | null>(null);
-  const [audioDurationSec, setAudioDurationSec] = useState(0);
   const [barTimeline, setBarTimeline] = useState<BarTimeline | null>(null);
+
+  // Three candidate recording lengths, least trustworthy last. `<audio>.duration`
+  // is an estimate from the bitrate header for VBR mp3s read from a blob URL, and
+  // `SyncMap.sanitize()` drops sync points that map past it — so trusting it here
+  // deleted end-of-song anchors that the sync-debug page (which decodes the file)
+  // had happily applied. That mismatch is why a correction could look applied in
+  // the debugger and do nothing during playback.
+  const [decodedDurationSec, setDecodedDurationSec] = useState(0);
+  const [storedDurationSec, setStoredDurationSec] = useState(0);
+  const [elementDurationSec, setElementDurationSec] = useState(0);
+  const audioDurationSec =
+    decodedDurationSec || storedDurationSec || elementDurationSec;
 
   // Synthesized reference tone for the displayed track (see trackSynth.ts).
   const [synthVol, setSynthVol] = useState(0.6);
@@ -215,7 +232,24 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
    * alignment (previously a stored map that failed validation fell back to a
    * straight line with no indication).
    */
-  const { syncMap, syncSource, syncWarning } = useMemo(() => {
+  /**
+   * Persist sync settings. `patchAudioSync` dispatches its change event
+   * synchronously, so flagging the write here is enough for our own listener to
+   * ignore the echo.
+   */
+  const persistSync = useCallback(
+    (patch: Partial<AudioSyncSettings>) => {
+      selfWritingSyncRef.current = true;
+      try {
+        patchAudioSync(songId, patch);
+      } finally {
+        selfWritingSyncRef.current = false;
+      }
+    },
+    [songId],
+  );
+
+  const { syncMap, syncSource, syncWarning, anchors } = useMemo(() => {
     return buildPlaybackSyncMap({
       stored: storedSyncMap,
       offsetMs,
@@ -224,13 +258,26 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     });
   }, [storedSyncMap, offsetMs, scoreDurationSec, audioDurationSec]);
 
+  // Manual anchors are vertices alphaTab has to be told about explicitly:
+  // neither bar-downbeat sampling nor Douglas–Peucker simplification would keep
+  // a mid-bar correction on its own.
+  const anchorScoreTimes = useMemo(
+    () => anchors.map((a) => a.scoreTime),
+    [anchors],
+  );
+
   const flatSyncPoints = useMemo(() => {
     if (!syncMap || !barTimeline) return null;
     if (syncSource === "dtw") {
-      return toAlphaTabBarSyncPoints(syncMap, barTimeline);
+      return toAlphaTabBarSyncPoints(syncMap, barTimeline, {
+        requiredScoreTimes: anchorScoreTimes,
+      });
     }
-    return toAlphaTabFlatSyncPoints(syncMap.simplify(0.02), barTimeline);
-  }, [syncMap, barTimeline, syncSource]);
+    return toAlphaTabFlatSyncPoints(
+      syncMap.simplify(0.02, { protectedScoreTimes: anchorScoreTimes }),
+      barTimeline,
+    );
+  }, [syncMap, barTimeline, syncSource, anchorScoreTimes]);
 
   const { onStateChanged, applySync } = useBackingSync({
     songId,
@@ -400,9 +447,11 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     let cleanupAudio: (() => void) | undefined;
 
     const sync = getAudioSync(songId);
+    const storedDurationKnown = (sync?.syncMap?.audioDurationSec ?? 0) > 0;
     if (sync) {
       setOffsetMs(sync.offsetMs ?? 0);
       setStoredSyncMap(sync.syncMap ?? null);
+      setStoredDurationSec(sync.syncMap?.audioDurationSec ?? 0);
       if (typeof sync.backingVol === "number") setBackingVol(sync.backingVol);
       if (typeof sync.backingMuted === "boolean")
         setBackingMuted(sync.backingMuted);
@@ -429,10 +478,26 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
       audio.load();
       setHasBacking(true);
 
+      // Ground truth for the recording length is the decoded PCM. A stored
+      // length was itself measured that way (by the aligner), so decoding is
+      // only worth the memory when there isn't one. Runs in the background
+      // either way, so the controls are never gated on it.
+      if (!storedDurationKnown) {
+        decodeAudio(typed)
+          .then((decoded) => {
+            if (!cancelled && decoded.duration > 0) {
+              setDecodedDurationSec(decoded.duration);
+            }
+          })
+          .catch((err) =>
+            console.error("[AlphaTabPlayer] could not decode the recording", err),
+          );
+      }
+
       const readDuration = () => {
         setAudioMetaReady(true);
         if (Number.isFinite(audio.duration) && audio.duration > 0) {
-          setAudioDurationSec(audio.duration);
+          setElementDurationSec(audio.duration);
         }
       };
       audio.addEventListener("loadedmetadata", readDuration);
@@ -461,15 +526,27 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   // write it back over the edit on its next persist. `storage` only fires in
   // the tabs that did not do the writing, so this can't loop with our own
   // persists or fight a slider mid-drag.
+  //
+  // `patchAudioSync` also fires a same-tab event, which is what makes an anchor
+  // edit audible immediately instead of only after a reload.
   useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key !== null && e.key !== AUDIO_SYNC_KEY) return;
+    const reload = () => {
+      if (selfWritingSyncRef.current) return;
       const sync = getAudioSync(songId);
       setOffsetMs(sync?.offsetMs ?? 0);
       setStoredSyncMap(sync?.syncMap ?? null);
+      setStoredDurationSec(sync?.syncMap?.audioDurationSec ?? 0);
+    };
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== null && e.key !== AUDIO_SYNC_KEY) return;
+      reload();
     };
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    window.addEventListener(AUDIO_SYNC_EVENT, reload);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener(AUDIO_SYNC_EVENT, reload);
+    };
   }, [songId]);
 
   useEffect(() => {
@@ -527,9 +604,9 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     synthRef.current?.setVolume(synthMuted ? 0 : synthVol);
     if (synthPersistTimer.current) clearTimeout(synthPersistTimer.current);
     synthPersistTimer.current = setTimeout(() => {
-      patchAudioSync(songId, { synthVol, synthMuted });
+      persistSync({ synthVol, synthMuted });
     }, PERSIST_DEBOUNCE_MS);
-  }, [synthVol, synthMuted, songId]);
+  }, [synthVol, synthMuted, persistSync]);
 
   // Re-anchor on every transport event so seeks, loop wraps and speed changes
   // never leave the synth running against a stale time reference.
@@ -562,6 +639,7 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
         setBarTimeline({
           bars: tl.bars.map((b) => ({
             barIndex: b.barIndex,
+            occurence: b.occurence,
             startSec: b.scoreTimeSec,
           })),
           endSec: tl.endSec,
@@ -581,11 +659,28 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   const syncSourceRef = useRef(syncSource);
   const scoreDurRef = useRef(scoreDurationSec);
   const audioDurRef = useRef(audioDurationSec);
+  const barTimelineRef = useRef(barTimeline);
   syncMapRef.current = syncMap;
   positionMsRef.current = positionMs;
   syncSourceRef.current = syncSource;
   scoreDurRef.current = scoreDurationSec;
   audioDurRef.current = audioDurationSec;
+  barTimelineRef.current = barTimeline;
+
+  /**
+   * Reads the points back out of alphaTab and diffs them against the map they
+   * came from. A faithful transfer means any remaining error is alignment
+   * quality; a lossy one means points are being dropped or mis-addressed on the
+   * way in — which is exactly how manual anchors used to disappear.
+   */
+  const verifyTransfer = useCallback(() => {
+    const map = syncMapRef.current;
+    const timeline = barTimelineRef.current;
+    if (!map) return { error: "no sync map yet" };
+    if (!timeline) return { error: "no bar timeline yet" };
+    return verifySyncTransfer(apiRef.current, map, timeline);
+  }, []);
+
   useEffect(() => {
     return installSyncDebug({
       getMap: () => syncMapRef.current,
@@ -594,8 +689,9 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
       getSource: () => syncSourceRef.current,
       getScoreDurationSec: () => scoreDurRef.current,
       getAudioDurationSec: () => audioDurRef.current,
+      verifyTransfer,
     });
-  }, []);
+  }, [verifyTransfer]);
 
   // Per-instrument mix (kept for a possible future synth mode; inert while the
   // recording is the clock, but harmless).
@@ -618,9 +714,9 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
 
     if (backingPersistTimer.current) clearTimeout(backingPersistTimer.current);
     backingPersistTimer.current = setTimeout(() => {
-      patchAudioSync(songId, { backingVol, backingMuted });
+      persistSync({ backingVol, backingMuted });
     }, PERSIST_DEBOUNCE_MS);
-  }, [backingVol, backingMuted, hasBacking, playerReady, songId]);
+  }, [backingVol, backingMuted, hasBacking, playerReady, persistSync]);
 
   useEffect(() => {
     return () => {
@@ -715,7 +811,7 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
 
     if (offsetPersistTimer.current) clearTimeout(offsetPersistTimer.current);
     offsetPersistTimer.current = setTimeout(() => {
-      patchAudioSync(songId, {
+      persistSync({
         offsetMs: clamped,
         ...(nextMap ? { syncMap: nextMap } : {}),
       });
@@ -724,7 +820,7 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
 
   function handleOffsetReset() {
     setStoredSyncMap(null);
-    patchAudioSync(songId, { offsetMs: 0, syncMap: undefined });
+    persistSync({ offsetMs: 0, syncMap: undefined });
     setOffsetMs(0);
     setSyncMessage(undefined);
     applySync();
@@ -791,7 +887,7 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
       };
       setStoredSyncMap(stored);
       setOffsetMs(0);
-      patchAudioSync(songId, { syncMap: stored, offsetMs: 0 });
+      persistSync({ syncMap: stored, offsetMs: 0 });
       applySync();
       setSyncMessage(
         result.status === "low-confidence"
@@ -1085,6 +1181,8 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
           appliedPointCount={flatSyncPoints?.length ?? 0}
           scoreTimeSec={positionMs / 1000}
           audioTimeSec={backingAudioRef.current?.currentTime ?? 0}
+          anchors={anchors}
+          onVerifyTransfer={verifyTransfer}
           onRunDtw={handleDtwAlign}
           dtwRunning={dtwRunning}
           message={syncMessage}

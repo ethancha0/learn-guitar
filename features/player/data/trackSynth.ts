@@ -122,23 +122,25 @@ export async function extractTrackTab(
   const track = score.tracks[trackIndex];
   if (!track) return { notes: [], stringCount: 6 };
 
-  const segments = buildTempoMap(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (gen.tickLookup as any).masterBars,
-    score,
-    midi.division,
-  );
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const lookupBars: any[] = (gen.tickLookup as any).masterBars;
+  const segments = buildTempoMap(lookupBars, score, midi.division);
 
   const notes: SynthNote[] = [];
+  // Walk PLAYBACK order, not score order: `lookupBars` expands repeats, and its
+  // `start` ticks are the same space `buildTempoMap` measures. Iterating
+  // `staff.bars` instead would emit each repeated bar once, at its first-pass
+  // time, leaving the notes drifting against a bar grid that does expand.
   for (const staff of track.staves) {
-    for (const bar of staff.bars) {
+    for (const lookupBar of lookupBars) {
+      const bar = staff.bars[lookupBar.masterBar?.index ?? -1];
+      if (!bar) continue;
       for (const voice of bar.voices) {
         for (const beat of voice.beats) {
           if (beat.isRest) continue;
-          // `beat.playbackStart` is relative to its own bar — using it directly
-          // stacks the whole song into bar 1. `absolutePlaybackStart` adds
-          // `masterBar.start`, giving the score-absolute tick the tempo map wants.
-          const startTick = beat.absolutePlaybackStart;
+          // `beat.playbackStart` is relative to its own bar; the occurrence's
+          // own start tick is what places it on the playback timeline.
+          const startTick = lookupBar.start + beat.playbackStart;
           const startSec = tickToSec(segments, startTick);
           const endSec = tickToSec(segments, startTick + beat.playbackDuration);
           for (const note of beat.notes) {

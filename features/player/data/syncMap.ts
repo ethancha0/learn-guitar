@@ -20,6 +20,13 @@ export interface SyncPoint {
   audioTime: number;
   /** Optional 0..1 alignment confidence for this region (higher = better). */
   confidence?: number;
+  /**
+   * `"anchor"` marks a point the user placed by hand. Every transform that is
+   * allowed to discard automatic points (`simplify`, `sanitize`, the bar-level
+   * alphaTab conversion) must preserve these, otherwise a manual correction
+   * silently disappears somewhere between the debugger and playback.
+   */
+  source?: "anchor";
 }
 
 export interface SyncMapDiagnostics {
@@ -52,6 +59,15 @@ export class SyncMapError extends Error {
 const EPS = 1e-9;
 /** Keep the terminal sync point this far inside the media duration (seconds). */
 const TERMINAL_EPS = 0.005;
+/** Two score times closer than this are the same vertex. */
+const SAME_TIME_SEC = 1e-3;
+/**
+ * How much of the automatic curve an anchor is allowed to re-fit on each side,
+ * in score seconds — roughly a bar at a moderate tempo. Automatic points inside
+ * the window are dropped so the curve runs in a straight line into and out of
+ * the anchor instead of spiking to it and back.
+ */
+const ANCHOR_WINDOW_SEC = 2;
 
 export class SyncMap {
   /** Sorted by `scoreTime`, validated strictly-increasing on both axes. */
@@ -271,17 +287,46 @@ export class SyncMap {
 
   /**
    * Insert a manual correction anchor and locally re-fit the surrounding region
-   * so the curve passes through it while staying monotone. Points strictly
-   * between the two neighbouring anchors are dropped and replaced by straight
-   * segments to `(scoreTime, audioTime)`.
+   * so the curve passes through it while staying monotone.
+   *
+   * Automatic points within `windowSec` are dropped and replaced by straight
+   * segments to `(scoreTime, audioTime)`. Leaving them in place made the curve
+   * spike to the anchor and immediately back to the next DTW vertex, which the
+   * cursor renders as a sprint-then-crawl around every correction. The window
+   * is clipped at the neighbouring anchors and never removes them, so a dense
+   * cluster of hand corrections can't erase itself.
    */
-  withAnchor(scoreTime: number, audioTime: number): SyncMap {
-    const kept = this.points.filter(
-      (p) => p.scoreTime < scoreTime - 1e-3 || p.scoreTime > scoreTime + 1e-3,
-    );
-    const merged = [...kept, { scoreTime, audioTime, confidence: 1 }].sort(
-      (a, b) => a.scoreTime - b.scoreTime,
-    );
+  withAnchor(
+    scoreTime: number,
+    audioTime: number,
+    opts: { windowSec?: number } = {},
+  ): SyncMap {
+    const windowSec = opts.windowSec ?? ANCHOR_WINDOW_SEC;
+    let lo = scoreTime - windowSec;
+    let hi = scoreTime + windowSec;
+    for (const p of this.points) {
+      if (p.source !== "anchor") continue;
+      if (p.scoreTime < scoreTime - SAME_TIME_SEC) {
+        lo = Math.max(lo, p.scoreTime);
+      } else if (p.scoreTime > scoreTime + SAME_TIME_SEC) {
+        hi = Math.min(hi, p.scoreTime);
+      }
+    }
+
+    const lastIndex = this.points.length - 1;
+    const kept = this.points.filter((p, i) => {
+      // The anchor replaces any vertex already sitting at its score time.
+      if (Math.abs(p.scoreTime - scoreTime) <= SAME_TIME_SEC) return false;
+      if (p.source === "anchor") return true;
+      // Keep the endpoints: they define the map's domain.
+      if (i === 0 || i === lastIndex) return true;
+      return p.scoreTime <= lo || p.scoreTime >= hi;
+    });
+
+    const merged = [
+      ...kept,
+      { scoreTime, audioTime, confidence: 1, source: "anchor" as const },
+    ].sort((a, b) => a.scoreTime - b.scoreTime);
     return SyncMap.fromPoints(merged, {
       ...(this.diagnostics ?? { method: "unknown" }),
       method: `${this.diagnostics?.method ?? "unknown"}+anchor`,
@@ -289,12 +334,39 @@ export class SyncMap {
   }
 
   /** Apply a list of manual anchors in order. */
-  withAnchors(anchors: readonly { scoreTime: number; audioTime: number }[]): SyncMap {
+  withAnchors(
+    anchors: readonly { scoreTime: number; audioTime: number }[],
+    opts: { windowSec?: number } = {},
+  ): SyncMap {
     let map: SyncMap = this;
     for (const a of [...anchors].sort((x, y) => x.scoreTime - y.scoreTime)) {
-      map = map.withAnchor(a.scoreTime, a.audioTime);
+      map = map.withAnchor(a.scoreTime, a.audioTime, opts);
     }
     return map;
+  }
+
+  /** Score times of every hand-placed anchor currently on the curve. */
+  anchorScoreTimes(): number[] {
+    return this.points
+      .filter((p) => p.source === "anchor")
+      .map((p) => p.scoreTime);
+  }
+
+  /** Index of the vertex at `scoreTime`, or null when there isn't one. */
+  private indexAtScoreTime(
+    scoreTime: number,
+    tolSec = SAME_TIME_SEC,
+  ): number | null {
+    let best: number | null = null;
+    let bestD = tolSec;
+    for (let i = 0; i < this.points.length; i++) {
+      const d = Math.abs(this.points[i].scoreTime - scoreTime);
+      if (d <= bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    return best;
   }
 
   /**
@@ -378,9 +450,11 @@ export class SyncMap {
     const median = this.medianSlope();
     let pts = [...this.points];
 
-    // 1. Trim a degenerate tail (keep at least two points).
+    // 1. Trim a degenerate tail (keep at least two points, never an anchor —
+    //    a correction at the end of the song is the whole point of anchoring).
     let trimmed = 0;
     while (pts.length > 2) {
+      if (pts[pts.length - 1].source === "anchor") break;
       const dx = pts[pts.length - 1].scoreTime - pts[pts.length - 2].scoreTime;
       if (dx <= EPS) break;
       const slope =
@@ -402,10 +476,22 @@ export class SyncMap {
         : undefined;
     if (audioMax != null) {
       const over = pts.filter((p) => p.audioTime > audioMax);
-      if (over.length > 0) {
-        pts = pts.filter((p) => p.audioTime <= audioMax);
+      const anchorsOver = over.filter((p) => p.source === "anchor");
+      const droppable = over.length - anchorsOver.length;
+      if (droppable > 0) {
+        pts = pts.filter(
+          (p) => p.audioTime <= audioMax || p.source === "anchor",
+        );
         repairs.push(
-          `dropped ${over.length} point(s) mapping past the recording (${opts.audioDurationSec!.toFixed(2)}s)`,
+          `dropped ${droppable} point(s) mapping past the recording (${opts.audioDurationSec!.toFixed(2)}s)`,
+        );
+      }
+      if (anchorsOver.length > 0) {
+        // A hand-placed anchor past the reported duration almost always means
+        // the *duration* is wrong (VBR mp3s read from a blob URL over-report),
+        // so the anchor is trusted over it.
+        repairs.push(
+          `kept ${anchorsOver.length} manual anchor(s) past the reported recording length (${opts.audioDurationSec!.toFixed(2)}s) — that duration is probably wrong`,
         );
       }
     }
@@ -445,7 +531,10 @@ export class SyncMap {
    * `toleranceSec` of the original curve, so genuine tempo moves survive and
    * redundant collinear runs collapse. Keep the dense map for scoring.
    */
-  simplify(toleranceSec = 0.02): SyncMap {
+  simplify(
+    toleranceSec = 0.02,
+    opts: { protectedScoreTimes?: readonly number[] } = {},
+  ): SyncMap {
     const pts = this.points;
     if (pts.length <= 2) return this;
 
@@ -453,8 +542,25 @@ export class SyncMap {
     keep[0] = 1;
     keep[pts.length - 1] = 1;
 
-    // Iterative DP to avoid recursion limits on very long songs.
-    const stack: Array<[number, number]> = [[0, pts.length - 1]];
+    // Manual anchors are vertices the curve MUST pass through, so they seed the
+    // split rather than competing with `toleranceSec` — a 20 ms tolerance would
+    // otherwise quietly discard a correction smaller than that.
+    for (let i = 0; i < pts.length; i++) {
+      if (pts[i].source === "anchor") keep[i] = 1;
+    }
+    for (const t of opts.protectedScoreTimes ?? []) {
+      const i = this.indexAtScoreTime(t);
+      if (i != null) keep[i] = 1;
+    }
+
+    // Iterative DP to avoid recursion limits on very long songs. Each protected
+    // vertex bounds its own segment so simplification happens between them.
+    const fixed: number[] = [];
+    for (let i = 0; i < pts.length; i++) if (keep[i] === 1) fixed.push(i);
+    const stack: Array<[number, number]> = [];
+    for (let k = 0; k + 1 < fixed.length; k++) {
+      stack.push([fixed[k], fixed[k + 1]]);
+    }
     while (stack.length) {
       const [lo, hi] = stack.pop()!;
       if (hi <= lo + 1) continue;
@@ -507,7 +613,12 @@ export class SyncMap {
 
 /** Bar index -> score-time of the bar's start (seconds), from alphaTab. */
 export interface BarTimeline {
-  bars: Array<{ barIndex: number; startSec: number }>;
+  /**
+   * One entry per bar *in playback order* (repeats expanded). `barIndex` is the
+   * bar's index in the score and `occurence` says which pass through it this is;
+   * alphaTab addresses sync points by that pair.
+   */
+  bars: Array<{ barIndex: number; startSec: number; occurence?: number }>;
   /** Score end time in seconds. */
   endSec: number;
 }
@@ -525,8 +636,8 @@ export interface AlphaTabFlatSyncPoint {
  * between them exactly like `SyncMap` does, so the visible cursor follows the
  * same mapping the gameplay clock uses.
  *
- * Points are placed on first repeat occurrences only (`barOccurence: 0`);
- * repeat-aware alignment is a follow-up.
+ * Each point carries the bar's repeat occurrence, so a song whose playback
+ * expands repeats stays synced past the first pass.
  */
 export function toAlphaTabFlatSyncPoints(
   map: SyncMap,
@@ -557,19 +668,24 @@ export function toAlphaTabFlatSyncPoints(
     const nextStart = barStartSec(barCursor + 1);
     const span = Math.max(nextStart - start, EPS);
     const barPosition = Math.min(1, Math.max(0, (s.scoreTime - start) / span));
+    const bar = bars[barCursor];
+    const barOccurence = bar.occurence ?? 0;
     const prev = out[out.length - 1];
-    // alphaTab wants strictly increasing (barIndex, barPosition).
+    // alphaTab wants strictly increasing (barOccurence, barPosition) within a
+    // bar. A repeat revisits the same barIndex at position 0, which is a new
+    // point, not a backwards one — so the occurrence has to be part of this test.
     if (
       prev &&
-      prev.barIndex === bars[barCursor].barIndex &&
+      prev.barIndex === bar.barIndex &&
+      prev.barOccurence === barOccurence &&
       barPosition <= prev.barPosition
     ) {
       continue;
     }
     out.push({
-      barIndex: bars[barCursor].barIndex,
+      barIndex: bar.barIndex,
       barPosition,
-      barOccurence: 0,
+      barOccurence,
       millisecondOffset: Math.round(s.audioTime * 1000),
     });
   }
@@ -580,30 +696,44 @@ export function toAlphaTabFlatSyncPoints(
  * Emit one `FlatSyncPoint` per bar downbeat (plus score end), interpolated
  * through the warp curve. Preferred for DTW maps: musically meaningful vertices
  * without hundreds of arbitrary 1 s grid points.
+ *
+ * Downbeats alone are NOT enough: sampling the curve only at bar starts reads it
+ * on either side of a mid-bar manual anchor and never at the anchor itself, so
+ * the correction never reaches alphaTab and playback keeps the old timing. Every
+ * anchor vertex is therefore sampled too, along with any extra score times the
+ * caller marks as required.
  */
 export function toAlphaTabBarSyncPoints(
   map: SyncMap,
   timeline: BarTimeline,
+  opts: { requiredScoreTimes?: readonly number[] } = {},
 ): AlphaTabFlatSyncPoint[] {
   const bars = timeline.bars;
   if (bars.length === 0) return [];
 
-  const samples: SyncPoint[] = bars.map((b) => ({
-    scoreTime: b.startSec,
-    audioTime: map.scoreTimeToAudioTime(b.startSec),
-  }));
-
   const endSec = timeline.endSec;
-  const last = samples[samples.length - 1];
-  if (endSec > last.scoreTime + EPS) {
-    samples.push({
-      scoreTime: endSec,
-      audioTime: map.scoreTimeToAudioTime(endSec),
-    });
+  const sampleTimes = bars.map((b) => b.startSec);
+  if (endSec > sampleTimes[sampleTimes.length - 1] + EPS) {
+    sampleTimes.push(endSec);
+  }
+  for (const t of [...map.anchorScoreTimes(), ...(opts.requiredScoreTimes ?? [])]) {
+    if (Number.isFinite(t)) sampleTimes.push(t);
+  }
+  sampleTimes.sort((a, b) => a - b);
+
+  const samples: SyncPoint[] = [];
+  for (const t of sampleTimes) {
+    const prev = samples[samples.length - 1];
+    if (prev && t - prev.scoreTime <= SAME_TIME_SEC) continue;
+    samples.push({ scoreTime: t, audioTime: map.scoreTimeToAudioTime(t) });
   }
 
   const barTimeline: BarTimeline = {
-    bars: bars.map((b) => ({ barIndex: b.barIndex, startSec: b.startSec })),
+    bars: bars.map((b) => ({
+      barIndex: b.barIndex,
+      startSec: b.startSec,
+      occurence: b.occurence,
+    })),
     endSec,
   };
   return toAlphaTabFlatSyncPoints(
