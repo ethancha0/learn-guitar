@@ -51,7 +51,8 @@ export async function POST(request: Request) {
       );
     }
 
-    return new Response(data, {
+    // Copy so the body is ArrayBuffer-backed; TS 5.7+ rejects Uint8Array<ArrayBufferLike>.
+    return new Response(new Uint8Array(data), {
       headers: {
         "Content-Type": "application/gp",
         "Content-Length": String(data.byteLength),
