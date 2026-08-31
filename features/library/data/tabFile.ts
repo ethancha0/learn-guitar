@@ -9,10 +9,6 @@ export function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-export async function fileToBase64(file: File): Promise<string> {
-  return bytesToBase64(new Uint8Array(await file.arrayBuffer()));
-}
-
 export function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);

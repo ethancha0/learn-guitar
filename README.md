@@ -54,6 +54,12 @@ with `scoreTimeToAudioTime` / `audioTimeToScoreTime`, isotonic smoothing and
   **SyncToolbox MrMsDTW** pipeline in `align/` → a dense nonlinear map that
   tracks local tempo. See `align/README.md`.
 
+Importing a song **queues DTW automatically** (`features/player/data/alignmentQueue.ts`).
+The run is serialized and off the import path — the song opens immediately on the
+linear offset map, and the player swaps in the DTW map through the sync store's
+change event when the job lands, no reload needed. Re-running it from the
+diagnostics panel goes through the same queue, so two runs can never overlap.
+
 The map is pushed to alphaTab as `FlatSyncPoint`s, sampled at every bar downbeat
 **and every beat** — alphaTab interpolates linearly between consecutive points,
 so beat spacing is what bounds cursor drift inside a bar (at 170 BPM a 4/4 bar

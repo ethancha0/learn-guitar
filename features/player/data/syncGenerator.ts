@@ -50,6 +50,14 @@ export interface SyncResult {
   status: "ok" | "low-confidence" | "failed";
   diagnostics?: SyncMapDiagnostics;
   message?: string;
+  /**
+   * Lengths the mapping was solved against, when the generator measured them
+   * itself. A background run has no alphaTab instance to ask for the score
+   * length and no decoded PCM for the recording, so these are what let it
+   * record the durations needed for staleness detection.
+   */
+  scoreDurationSec?: number;
+  audioDurationSec?: number;
 }
 
 export interface SyncGenerator {
@@ -113,6 +121,10 @@ interface AlignApiResponse {
   alphaTabFlatSyncPoints?: AlphaTabFlatSyncPoint[];
   diagnostics?: SyncMapDiagnostics;
   message?: string;
+  /** Score length used for clipping — the request's, or the GP bar timeline's. */
+  scoreDurationSec?: number;
+  /** Decoded length of the recording. */
+  recordingDurationSec?: number;
 }
 
 export class DtwSyncGenerator implements SyncGenerator {
@@ -176,6 +188,8 @@ export class DtwSyncGenerator implements SyncGenerator {
       status: data.status,
       diagnostics: data.diagnostics,
       message: data.message,
+      scoreDurationSec: data.scoreDurationSec,
+      audioDurationSec: data.recordingDurationSec,
     };
   }
 }

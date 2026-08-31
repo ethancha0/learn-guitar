@@ -53,10 +53,11 @@ import {
 import { buildPlaybackSyncMap } from "@/features/player/data/buildSyncMap";
 import { decodeAudio } from "@/features/player/data/waveform";
 import { extractScoreTimeline } from "@/features/player/data/scoreTimeline";
+import { OffsetSyncGenerator } from "@/features/player/data/syncGenerator";
 import {
-  OffsetSyncGenerator,
-  DtwSyncGenerator,
-} from "@/features/player/data/syncGenerator";
+  queueAlignment,
+  useAlignmentJob,
+} from "@/features/player/data/alignmentQueue";
 import { installSyncDebug } from "@/features/player/data/syncDebug";
 import { verifySyncTransfer } from "@/features/player/data/syncVerify";
 import {
@@ -204,8 +205,12 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   const synthRef = useRef<TrackSynth | null>(null);
   const synthPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [autoAligning, setAutoAligning] = useState(false);
-  const [dtwRunning, setDtwRunning] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | undefined>();
+  // Alignment runs in a shared queue, so a job started by the import dialog
+  // before this player mounted shows up here too.
+  const alignmentJob = useAlignmentJob(songId);
+  const dtwRunning =
+    alignmentJob?.state === "queued" || alignmentJob?.state === "running";
 
   // Score length: prefer the bar timeline (known as soon as the score loads);
   // `playerPositionChanged.endTime` only arrives once playback/seek happens, and
@@ -595,6 +600,12 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     };
   }, [songId]);
 
+  // Alignment progress reaches the UI through the same message channel as the
+  // manual controls, so whichever acted last is what the panel shows.
+  useEffect(() => {
+    if (alignmentJob?.message) setSyncMessage(alignmentJob.message);
+  }, [alignmentJob]);
+
   useEffect(() => {
     scrubbingRef.current = scrubbing;
   }, [scrubbing]);
@@ -900,55 +911,29 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     }
   }
 
-  /** Offline DTW alignment via /api/align; produces a nonlinear map. */
+  /**
+   * Re-run offline DTW alignment via the shared queue. The result is written to
+   * the sync store, which this player reloads through `AUDIO_SYNC_EVENT` —
+   * the same path a background job started at import time takes.
+   */
   async function handleDtwAlign() {
-    setDtwRunning(true);
-    setSyncMessage("Running DTW alignment… (this can take a minute)");
-    try {
-      const blob = await getBackingAudio(songId);
-      if (!blob) {
-        setSyncMessage("No recording to align against.");
-        return;
-      }
-      const result = await new DtwSyncGenerator().generate({
-        songId,
-        gpBytes: base64ToBytes(tabData),
-        audioBlob: blob,
-        scoreDurationSec,
-        audioDurationSec,
-        // Existing manual anchors are sent along so the refiner can solve
-        // between them instead of re-solving the whole song globally.
-        anchors: storedSyncMap?.anchors ?? [],
-      });
-      if (result.status === "failed" || result.points.length < 2) {
-        setSyncMessage(result.message ?? "DTW alignment failed.");
-        return;
-      }
-      const stored: StoredSyncMap = {
-        points: result.points,
-        // Manual corrections survive a re-run.
-        anchors: storedSyncMap?.anchors ?? [],
-        method: result.method,
-        status: result.status === "low-confidence" ? "low-confidence" : "ok",
-        scoreEndSec: scoreDurationSec || undefined,
-        audioDurationSec: audioDurationSec || undefined,
-        diagnostics: result.diagnostics as Record<string, unknown> | undefined,
-        createdAt: Date.now(),
-      };
-      setStoredSyncMap(stored);
-      setOffsetMs(0);
-      persistSync({ syncMap: stored, offsetMs: 0 });
-      applySync();
-      setSyncMessage(
-        result.status === "low-confidence"
-          ? `Aligned with low confidence — review suspicious sections. ${result.message ?? ""}`
-          : `Aligned: ${result.points.length} points via ${result.method}.`,
-      );
-    } catch (err) {
-      setSyncMessage(`DTW alignment error: ${(err as Error).message}`);
-    } finally {
-      setDtwRunning(false);
+    setSyncMessage(undefined);
+    const blob = await getBackingAudio(songId);
+    if (!blob) {
+      setSyncMessage("No recording to align against.");
+      return;
     }
+    await queueAlignment({
+      songId,
+      gpBytes: base64ToBytes(tabData),
+      audioBlob: blob,
+      scoreDurationSec,
+      audioDurationSec,
+      // Existing manual anchors are sent along so the refiner can solve
+      // between them instead of re-solving the whole song globally.
+      anchors: storedSyncMap?.anchors ?? [],
+      force: true,
+    });
   }
 
   const controlsDisabled = !playerReady || !audioMetaReady;
@@ -1200,12 +1185,15 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
           <Button
             variant="ghost"
             size="icon"
-            aria-label="Sync diagnostics"
+            aria-label={dtwRunning ? "Aligning… (sync diagnostics)" : "Sync diagnostics"}
             aria-pressed={diagOpen}
-            className={cn("hidden md:inline-flex", diagOpen && "text-accent")}
+            className={cn(
+              "hidden md:inline-flex",
+              (diagOpen || dtwRunning) && "text-accent",
+            )}
             onClick={() => setDiagOpen((o) => !o)}
           >
-            <Activity className="h-4 w-4" />
+            <Activity className={cn("h-4 w-4", dtwRunning && "animate-pulse")} />
           </Button>
         )}
         <Button

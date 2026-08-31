@@ -16,8 +16,9 @@ import {
 } from "@/components/ui/Dialog";
 import { cn } from "@/lib/cn";
 import { addImportedSong, type ImportedSong } from "../data/songStore";
-import { fileToBase64 } from "../data/tabFile";
+import { bytesToBase64 } from "../data/tabFile";
 import { putBackingAudio } from "@/features/player/data/audioStore";
+import { queueAlignment } from "@/features/player/data/alignmentQueue";
 
 const TAB_EXTENSIONS = [
   ".gp",
@@ -185,10 +186,11 @@ export function ImportSongDialog() {
 
     try {
       const tabFile = tabFiles[0];
-      const [durationSec, tabData] = await Promise.all([
+      const [durationSec, tabBytes] = await Promise.all([
         readAudioDuration(audioFiles[0]),
-        fileToBase64(tabFile),
+        tabFile.arrayBuffer().then((buf) => new Uint8Array(buf)),
       ]);
+      const tabData = bytesToBase64(tabBytes);
       const title = titleFromFileName(tabFile.name) || "Imported song";
       const id = `${slugify(title)}-${Date.now().toString(36)}`;
 
@@ -211,6 +213,17 @@ export function ImportSongDialog() {
       };
 
       addImportedSong(song);
+
+      // Deliberately not awaited: DTW takes tens of seconds to minutes, and the
+      // song is playable (on a linear offset map) the whole time. The player
+      // swaps in the real mapping when the job writes it.
+      void queueAlignment({
+        songId: id,
+        gpBytes: tabBytes,
+        audioBlob: audioFiles[0],
+        audioDurationSec: durationSec || undefined,
+      });
+
       setOpen(false);
       reset();
       router.push(`/player/${id}`);

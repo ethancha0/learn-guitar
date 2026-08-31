@@ -43,7 +43,7 @@ sync generation:
 
 | Concern | Location |
 | --- | --- |
-| GP load | `ImportSongDialog.tsx` (`fileToBase64`) → `songStore.ts` `learn-bass.imported-songs`; decoded by `base64ToBytes` and `api.load(...)` in `AlphaTabPlayer.tsx` |
+| GP load | `ImportSongDialog.tsx` (`bytesToBase64`) → `songStore.ts` `learn-bass.imported-songs`; decoded by `base64ToBytes` and `api.load(...)` in `AlphaTabPlayer.tsx` |
 | alphaTab config | `AlphaTabPlayer.tsx` ~L184 — `player.playerMode = EnabledExternalMedia`, `enableCursor/enableAnimatedBeatCursor/enableElementHighlighting`, no soundfont |
 | `useBackingSync` | `features/player/data/backingSync.ts` — **playback layer only**. Builds an `IExternalMediaHandler` (`play/pause/seekTo/playbackRate/masterVolume`), assigns it to `api.player.output.handler`, and pumps `output.updatePosition(audio.currentTime*1000)` each animation frame while playing. It does **no audio analysis**. |
 | Sync points | `backingSync.ts` `applySync()` (was `applyOffset()`) — one bar-0 `FlatSyncPoint` from `offsetMs`. |
