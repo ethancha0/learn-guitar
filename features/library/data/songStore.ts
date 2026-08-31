@@ -5,6 +5,7 @@ import type { Song } from "../types/song";
 import { songs as seedSongs, getSongById as getSeedSongById } from "./songs";
 import { useSupabaseSongs } from "./supabaseSongStore";
 import type { YouTubeSearchResult } from "@/lib/youtube/types";
+import type { SongsterrSource } from "@/lib/songsterr/types";
 
 /**
  * Client-side view of user-imported songs. Account-backed imports are cached in
@@ -28,6 +29,8 @@ export interface ImportedSong extends Song {
   audioStoragePath?: string;
   /** Optional YouTube result the user paired with the imported tab/audio. */
   youtubeSource?: YouTubeSearchResult;
+  /** Songsterr song the tab was downloaded from, when one was used. */
+  songsterrSource?: SongsterrSource;
   /** True when this song is known to exist in the signed-in user's account. */
   persisted?: boolean;
 }

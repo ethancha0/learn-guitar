@@ -35,8 +35,10 @@ Supabase Auth. In Google Cloud, add `http://localhost:3000` as an authorized
 JavaScript origin for local development, and use Supabase's Google callback URL
 for the OAuth redirect URI. The app redirects through `/auth/callback`.
 
-YouTube search/download in the import dialog is handled server-side through
-`yt-dlp`, with `ffmpeg`/`ffprobe` used for inspection and alignment WAV
+Songsterr search in the import dialog looks up a song (or a pasted Songsterr
+URL) and converts the current revision to a Guitar Pro file via
+`POST /api/songsterr/download`. YouTube search/download is handled server-side
+through `yt-dlp`, with `ffmpeg`/`ffprobe` used for inspection and alignment WAV
 preparation. No YouTube API key is required. For local development on macOS:
 
 ```bash

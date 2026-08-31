@@ -7,6 +7,7 @@ import {
   Check,
   ExternalLink,
   FileMusic,
+  Guitar,
   Loader2,
   Search,
   Youtube,
@@ -23,7 +24,11 @@ import {
   DialogClose,
 } from "@/components/ui/Dialog";
 import { cn } from "@/lib/cn";
-import { addImportedSong, type ImportedSong } from "../data/songStore";
+import {
+  addImportedSong,
+  setPreferredTrackIndex,
+  type ImportedSong,
+} from "../data/songStore";
 import {
   uploadSongToAccount,
   dispatchSupabaseSongsChanged,
@@ -31,7 +36,14 @@ import {
 import { bytesToBase64 } from "../data/tabFile";
 import { putBackingAudio } from "@/features/player/data/audioStore";
 import { queueAlignment } from "@/features/player/data/alignmentQueue";
+import { Select } from "@/components/ui/Select";
 import type { YouTubeSearchResult } from "@/lib/youtube/types";
+import type {
+  SongsterrSong,
+  SongsterrTrack,
+} from "@/lib/songsterr/types";
+import { tuningLabel } from "@/lib/songsterr/tuning";
+import type { Song } from "../types/song";
 import { formatDuration } from "./formatDuration";
 
 const TAB_EXTENSIONS = [
@@ -63,6 +75,20 @@ function slugify(value: string): string {
   );
 }
 
+/** A bare id or anything on songsterr.com is a direct lookup, not a search. */
+function looksLikeSongsterrLink(value: string): boolean {
+  const raw = value.trim();
+  return /songsterr\.com/i.test(raw) || /^\d+$/.test(raw);
+}
+
+/** Songsterr rates tabs 1-5; the library only models three bands. */
+function difficultyFromSongsterr(value?: number): Song["difficulty"] | undefined {
+  if (value === undefined) return undefined;
+  if (value <= 2) return "beginner";
+  if (value <= 3) return "intermediate";
+  return "advanced";
+}
+
 function titleFromFileName(name: string): string {
   return name.replace(/\.[^/.]+$/, "").replace(/[_-]+/g, " ").trim();
 }
@@ -89,6 +115,15 @@ function fileNameFromContentDisposition(value: string | null): string | null {
   if (quoted?.[1]) return quoted[1];
   const plain = value.match(/filename=([^;]+)/i);
   return plain?.[1]?.trim() ?? null;
+}
+
+/** `X-Songsterr-Part-Ids` is the Songsterr track index of each track in the GP file. */
+function parsePartIds(header: string | null): number[] {
+  if (!header?.trim()) return [];
+  return header
+    .split(",")
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isInteger(value));
 }
 
 function accountSyncErrorMessage(err: unknown): string {
@@ -136,6 +171,9 @@ interface DropZoneProps {
   files: File[];
   onFiles: (files: File[]) => void;
   allowed: string[];
+  /** Flags this zone as the remaining blocker once the other inputs are done. */
+  needed?: boolean;
+  busy?: boolean;
 }
 
 function DropZone({
@@ -147,6 +185,8 @@ function DropZone({
   files,
   onFiles,
   allowed,
+  needed,
+  busy,
 }: DropZoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -173,22 +213,32 @@ function DropZone({
       }}
       className={cn(
         "flex flex-col items-center gap-2 rounded-xl border border-dashed border-white/15 px-6 py-8 text-center transition-colors",
-        dragging && "border-accent/70 bg-accent/5",
+        needed && !files.length && "border-amber-400/50 bg-amber-400/5",
         files.length && "border-accent/40",
+        dragging && "border-accent/70 bg-accent/5",
       )}
     >
       <div className="text-zinc-400">{icon}</div>
       <p className="text-base font-medium text-zinc-200">{title}</p>
-      <p className="text-xs text-zinc-500">{hint}</p>
+      <p className={cn("text-xs text-zinc-500", needed && !files.length && "text-amber-400/90")}>
+        {needed && !files.length ? "Required to finish" : hint}
+      </p>
 
-      {files.length > 0 && (
-        <ul className="mt-1 w-full space-y-0.5 text-xs text-accent">
-          {files.map((f) => (
-            <li key={f.name} className="truncate">
-              {f.name}
-            </li>
-          ))}
-        </ul>
+      {busy ? (
+        <div className="mt-1 flex items-center gap-2 text-xs text-accent">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Downloading…
+        </div>
+      ) : (
+        files.length > 0 && (
+          <ul className="mt-1 w-full space-y-0.5 text-xs text-accent">
+            {files.map((f) => (
+              <li key={f.name} className="truncate">
+                {f.name}
+              </li>
+            ))}
+          </ul>
+        )
       )}
 
       <Button
@@ -196,6 +246,7 @@ function DropZone({
         variant="outline"
         size="sm"
         className="mt-2"
+        disabled={busy}
         onClick={() => inputRef.current?.click()}
       >
         Browse…
@@ -205,6 +256,7 @@ function DropZone({
         type="file"
         accept={accept}
         multiple={multiple}
+        disabled={busy}
         className="hidden"
         onChange={(e) => accept_(e.target.files)}
       />
@@ -226,10 +278,36 @@ export function ImportSongDialog() {
     null,
   );
   const [youtubeError, setYoutubeError] = useState<string | null>(null);
+  const [songsterrQuery, setSongsterrQuery] = useState("");
+  const [songsterrResults, setSongsterrResults] = useState<SongsterrSong[]>([]);
+  const [songsterrSong, setSongsterrSong] = useState<SongsterrSong | null>(null);
+  const [songsterrTrackIndex, setSongsterrTrackIndex] = useState<number | null>(
+    null,
+  );
+  const [songsterrLoading, setSongsterrLoading] = useState(false);
+  const [songsterrError, setSongsterrError] = useState<string | null>(null);
+  const [tabDownloading, setTabDownloading] = useState(false);
+  const [tabError, setTabError] = useState<string | null>(null);
+  /** Songsterr track index of each track in the downloaded Guitar Pro file. */
+  const [tabPartIds, setTabPartIds] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Ignore a download that finished after the user picked a different song. */
+  const songsterrDownloadIdRef = useRef<number | null>(null);
 
-  const ready = tabFiles.length > 0 && audioFiles.length > 0;
+  const ready =
+    tabFiles.length > 0 && audioFiles.length > 0 && !tabDownloading;
+  const missing = [
+    tabDownloading
+      ? "the Songsterr tab to finish downloading"
+      : tabFiles.length === 0
+        ? "a Guitar Pro tab file"
+        : null,
+    audioFiles.length === 0 ? "an audio file" : null,
+  ].filter((item): item is string => item !== null);
+  const songsterrTrack: SongsterrTrack | null =
+    songsterrSong?.tracks.find((track) => track.index === songsterrTrackIndex) ??
+    null;
 
   function reset() {
     setTabFiles([]);
@@ -240,6 +318,16 @@ export function ImportSongDialog() {
     setYoutubeSearching(false);
     setYoutubeDownloadingId(null);
     setYoutubeError(null);
+    setSongsterrQuery("");
+    setSongsterrResults([]);
+    setSongsterrSong(null);
+    setSongsterrTrackIndex(null);
+    setSongsterrLoading(false);
+    setSongsterrError(null);
+    setTabDownloading(false);
+    setTabError(null);
+    setTabPartIds([]);
+    songsterrDownloadIdRef.current = null;
     setBusy(false);
     setError(null);
   }
@@ -256,7 +344,9 @@ export function ImportSongDialog() {
         tabFile.arrayBuffer().then((buf) => new Uint8Array(buf)),
       ]);
       const tabData = bytesToBase64(tabBytes);
+      // Songsterr's catalogue metadata beats a YouTube uploader's video title.
       const title =
+        songsterrSong?.title ||
         (selectedYoutube && decodeHtmlEntities(selectedYoutube.title)) ||
         titleFromFileName(tabFile.name) ||
         "Imported song";
@@ -279,12 +369,15 @@ export function ImportSongDialog() {
       const song: ImportedSong = {
         id,
         title,
-        artist: selectedYoutube
-          ? decodeHtmlEntities(selectedYoutube.channelTitle)
-          : "Imported",
+        artist:
+          songsterrSong?.artist ||
+          (selectedYoutube
+            ? decodeHtmlEntities(selectedYoutube.channelTitle)
+            : "Imported"),
         durationSec: durationSec || selectedYoutube?.durationSec || 0,
         bpm: 120,
-        difficulty: "intermediate",
+        difficulty:
+          difficultyFromSongsterr(songsterrTrack?.difficulty) ?? "intermediate",
         hasAudio: true,
         hasTab: true,
         tabData,
@@ -292,6 +385,18 @@ export function ImportSongDialog() {
         tabFileName: tabFile.name,
         audioFileNames: audioFiles.map((f) => f.name),
         youtubeSource: selectedYoutube ?? undefined,
+        songsterrSource: songsterrSong
+          ? {
+              songId: songsterrSong.songId,
+              revisionId: songsterrSong.revisionId,
+              trackIndex: songsterrTrack?.index,
+              trackName: songsterrTrack?.name,
+              title: songsterrSong.title,
+              artist: songsterrSong.artist,
+              tuning: songsterrTrack?.tuning,
+              url: songsterrSong.url,
+            }
+          : undefined,
       };
 
       let savedSong = song;
@@ -326,6 +431,11 @@ export function ImportSongDialog() {
         return;
       }
 
+      if (tabPartIds.length && songsterrTrackIndex !== null) {
+        const gpIndex = tabPartIds.indexOf(songsterrTrackIndex);
+        if (gpIndex >= 0) setPreferredTrackIndex(savedSong.id, gpIndex);
+      }
+
       // Deliberately not awaited: DTW takes tens of seconds to minutes. The
       // player opens behind an alignment overlay and becomes playable when the
       // job writes the real mapping.
@@ -350,8 +460,142 @@ export function ImportSongDialog() {
     }
   }
 
+  /** Resolve a Songsterr link/id to its current revision and pick a track. */
+  async function resolveSongsterr(input: string) {
+    const response = await fetch(
+      `/api/songsterr/song?url=${encodeURIComponent(input)}`,
+    );
+    const body = (await response.json()) as {
+      song?: SongsterrSong;
+      suggestedTrack?: SongsterrTrack | null;
+      error?: string;
+    };
+    if (!response.ok || !body.song) {
+      throw new Error(body.error ?? "Songsterr lookup failed.");
+    }
+
+    setSongsterrSong(body.song);
+    setSongsterrTrackIndex(body.suggestedTrack?.index ?? null);
+
+    // Songsterr's artist/title is a far better YouTube query than the raw
+    // input, so the audio half of the import can run straight off it.
+    const query = `${body.song.artist} ${body.song.title}`;
+    setYoutubeQuery(query);
+    void runYoutubeSearch(query);
+    void downloadSongsterrTab(body.song);
+  }
+
+  async function downloadSongsterrTab(song: SongsterrSong) {
+    songsterrDownloadIdRef.current = song.songId;
+    setTabDownloading(true);
+    setTabError(null);
+    setTabFiles([]);
+    setTabPartIds([]);
+
+    try {
+      const response = await fetch("/api/songsterr/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ songId: song.songId }),
+      });
+
+      if (songsterrDownloadIdRef.current !== song.songId) return;
+
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(body?.error ?? `Download failed with ${response.status}.`);
+      }
+
+      const blob = await response.blob();
+      if (songsterrDownloadIdRef.current !== song.songId) return;
+      if (blob.size < 100) {
+        throw new Error("Songsterr returned an empty tab file.");
+      }
+
+      const fileName =
+        fileNameFromContentDisposition(
+          response.headers.get("Content-Disposition"),
+        ) ?? `${song.artist} ${song.title}.gp`;
+      setTabFiles([
+        new File([blob], fileName, {
+          type: blob.type || "application/gp",
+        }),
+      ]);
+      setTabPartIds(parsePartIds(response.headers.get("X-Songsterr-Part-Ids")));
+    } catch (err) {
+      if (songsterrDownloadIdRef.current !== song.songId) return;
+      setTabError(
+        err instanceof Error ? err.message : "Songsterr tab download failed.",
+      );
+    } finally {
+      if (songsterrDownloadIdRef.current === song.songId) {
+        setTabDownloading(false);
+      }
+    }
+  }
+
+  async function handleSongsterrLookup() {
+    const q = songsterrQuery.trim();
+    if (!q || songsterrLoading) return;
+    setSongsterrLoading(true);
+    setSongsterrError(null);
+
+    try {
+      if (looksLikeSongsterrLink(q)) {
+        setSongsterrResults([]);
+        await resolveSongsterr(q);
+        return;
+      }
+
+      const response = await fetch(
+        `/api/songsterr/search?q=${encodeURIComponent(q)}`,
+      );
+      const body = (await response.json()) as {
+        results?: SongsterrSong[];
+        error?: string;
+      };
+      if (!response.ok) throw new Error(body.error ?? "Songsterr search failed.");
+
+      setSongsterrSong(null);
+      setSongsterrTrackIndex(null);
+      setSongsterrResults(body.results ?? []);
+      if (!body.results?.length) {
+        setSongsterrError("No Songsterr results found.");
+      }
+    } catch (err) {
+      setSongsterrResults([]);
+      setSongsterrError(
+        err instanceof Error ? err.message : "Songsterr lookup failed.",
+      );
+    } finally {
+      setSongsterrLoading(false);
+    }
+  }
+
+  async function handleSongsterrPick(song: SongsterrSong) {
+    if (songsterrLoading) return;
+    setSongsterrLoading(true);
+    setSongsterrError(null);
+    try {
+      await resolveSongsterr(String(song.songId));
+      setSongsterrResults([]);
+    } catch (err) {
+      setSongsterrError(
+        err instanceof Error ? err.message : "Songsterr lookup failed.",
+      );
+    } finally {
+      setSongsterrLoading(false);
+    }
+  }
+
   async function handleYoutubeSearch() {
-    const q = youtubeQuery.trim();
+    await runYoutubeSearch(youtubeQuery);
+  }
+
+  async function runYoutubeSearch(query: string) {
+    const q = query.trim();
     if (!q) return;
     setYoutubeSearching(true);
     setYoutubeError(null);
@@ -450,7 +694,19 @@ export function ImportSongDialog() {
             accept={TAB_EXTENSIONS.join(",")}
             allowed={TAB_EXTENSIONS}
             files={tabFiles}
-            onFiles={setTabFiles}
+            onFiles={(files) => {
+              songsterrDownloadIdRef.current = null;
+              setTabDownloading(false);
+              setTabError(null);
+              setTabPartIds([]);
+              setTabFiles(files);
+            }}
+            busy={tabDownloading}
+            needed={
+              tabFiles.length === 0 &&
+              !tabDownloading &&
+              (audioFiles.length > 0 || Boolean(songsterrSong))
+            }
           />
           <DropZone
             title="Drop audio file(s)"
@@ -462,6 +718,166 @@ export function ImportSongDialog() {
             files={audioFiles}
             onFiles={setAudioFiles}
           />
+        </div>
+
+        <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-surface-overlay/40 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <Guitar className="h-4 w-4 shrink-0 text-emerald-400" />
+              <p className="truncate text-sm font-medium text-zinc-200">
+                Search Songsterr
+              </p>
+            </div>
+            {songsterrSong && (
+              <a
+                href={songsterrSong.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex shrink-0 items-center gap-1 text-xs text-accent hover:text-accent-muted"
+              >
+                Open
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <div className="relative min-w-0 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+              <Input
+                value={songsterrQuery}
+                onChange={(e) => setSongsterrQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void handleSongsterrLookup();
+                }}
+                placeholder="Paste a Songsterr link, or search song / artist"
+                className="pl-9"
+              />
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void handleSongsterrLookup()}
+              disabled={songsterrLoading || !songsterrQuery.trim()}
+            >
+              {songsterrLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Search className="h-4 w-4" />
+              )}
+              Look up
+            </Button>
+          </div>
+
+          {songsterrError && (
+            <p className="text-sm text-red-400" role="alert">
+              {songsterrError}
+            </p>
+          )}
+
+          {songsterrResults.length > 0 && (
+            <div className="max-h-56 space-y-2 overflow-y-auto pr-1">
+              {songsterrResults.map((result) => {
+                const bass = result.tracks.find((t) => t.family === "bass");
+                return (
+                  <button
+                    key={result.songId}
+                    type="button"
+                    onClick={() => void handleSongsterrPick(result)}
+                    className="w-full rounded-md border border-white/10 bg-surface-raised/70 p-2 text-left transition-colors hover:border-accent/40"
+                  >
+                    <p className="truncate text-sm font-medium text-zinc-100">
+                      {result.title}
+                    </p>
+                    <p className="truncate text-xs text-zinc-400">
+                      {result.artist}
+                      {bass ? ` · bass ${tuningLabel(bass.tuning) ?? ""}` : ""}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {songsterrSong && (
+            <div className="flex flex-col gap-2 rounded-md border border-white/10 bg-surface-raised/70 p-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-zinc-100">
+                  {songsterrSong.title}
+                </p>
+                <p className="truncate text-xs text-zinc-400">
+                  {songsterrSong.artist}
+                  {songsterrSong.revisionId
+                    ? ` · revision ${songsterrSong.revisionId}`
+                    : ""}
+                </p>
+              </div>
+
+              {songsterrSong.tracks.length > 0 && (
+                <label className="flex flex-col gap-1 text-xs text-zinc-400">
+                  Track
+                  <Select
+                    className="h-9 w-full"
+                    value={songsterrTrackIndex ?? ""}
+                    onChange={(e) =>
+                      setSongsterrTrackIndex(
+                        e.target.value === "" ? null : Number(e.target.value),
+                      )
+                    }
+                  >
+                    {songsterrSong.tracks.map((track) => (
+                      <option key={track.index} value={track.index}>
+                        {track.name === track.instrument
+                          ? track.name
+                          : `${track.name} · ${track.instrument}`}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+              )}
+
+              {songsterrTrack && (
+                <p className="text-xs text-zinc-400">
+                  {tuningLabel(songsterrTrack.tuning) ?? "No tuning"}
+                  {songsterrTrack.difficulty
+                    ? ` · difficulty ${songsterrTrack.difficulty}/5`
+                    : ""}
+                </p>
+              )}
+
+              {tabDownloading && (
+                <p className="flex items-center gap-2 text-xs text-accent">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Downloading Guitar Pro tab…
+                </p>
+              )}
+
+              {tabError && (
+                <div className="flex flex-col gap-2">
+                  <p className="text-sm text-red-400" role="alert">
+                    {tabError}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void downloadSongsterrTab(songsterrSong)}
+                    disabled={tabDownloading}
+                  >
+                    Retry download
+                  </Button>
+                </div>
+              )}
+
+              {!tabDownloading && !tabError && tabPartIds.length > 0 && (
+                <p className="flex items-center gap-1.5 text-xs text-zinc-400">
+                  <Check className="h-3.5 w-3.5 text-accent" />
+                  Tab downloaded. You can still drop a different Guitar Pro file
+                  above.
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-surface-overlay/40 p-4">
@@ -584,6 +1000,12 @@ export function ImportSongDialog() {
         {error && (
           <p className="text-sm text-red-400" role="alert">
             {error}
+          </p>
+        )}
+
+        {!ready && (
+          <p className="text-xs text-zinc-400">
+            Still needed: {missing.join(" and ")}.
           </p>
         )}
 

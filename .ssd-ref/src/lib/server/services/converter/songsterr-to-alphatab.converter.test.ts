@@ -1,0 +1,1320 @@
+import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { SongsterrToAlphaTabConverter } from './songsterr-to-alphatab.converter';
+import type {
+  SongsterrRevisionTrackPayload,
+  SongsterrStateMetaCurrent,
+  SongsterrStateMetaCurrentTrack
+} from '$lib/types';
+import type { SongsterrRevisionTrackInput } from './songsterr-to-alphatab.converter';
+
+function loadRevision(path: string): SongsterrRevisionTrackPayload {
+  return JSON.parse(readFileSync(path, 'utf-8'));
+}
+
+function makeTrackMeta(
+  overrides: Partial<SongsterrStateMetaCurrentTrack> = {}
+): SongsterrStateMetaCurrentTrack {
+  return {
+    partId: 0,
+    instrumentId: 27,
+    title: 'Test Guitar',
+    tuning: [64, 59, 55, 50, 45, 40],
+    ...overrides
+  };
+}
+
+function makeMeta(
+  tracks: SongsterrStateMetaCurrentTrack[],
+  overrides: Partial<SongsterrStateMetaCurrent> = {}
+): SongsterrStateMetaCurrent {
+  return {
+    songId: 1,
+    revisionId: 1,
+    image: 'test',
+    title: 'Test Song',
+    artist: 'Test Artist',
+    tracks,
+    ...overrides
+  };
+}
+
+function convertSingle(
+  revision: SongsterrRevisionTrackPayload,
+  trackMeta?: SongsterrStateMetaCurrentTrack
+) {
+  const meta = trackMeta || makeTrackMeta();
+  const converter = new SongsterrToAlphaTabConverter();
+  return converter.toGp7({
+    meta: makeMeta([meta]),
+    revisions: [{ trackMeta: meta, revision }]
+  });
+}
+
+function readMidiHeader(data: Uint8Array) {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  return {
+    format: view.getUint16(8, false),
+    trackCount: view.getUint16(10, false),
+    division: view.getUint16(12, false)
+  };
+}
+
+function readMidiTrackNames(data: Uint8Array): string[] {
+  const names: string[] = [];
+  let offset = 14;
+
+  for (let trackIndex = 0; offset + 8 <= data.length; trackIndex++) {
+    const chunkId = new TextDecoder().decode(data.slice(offset, offset + 4));
+    if (chunkId !== 'MTrk') break;
+
+    const length = new DataView(
+      data.buffer,
+      data.byteOffset + offset + 4,
+      4
+    ).getUint32(0, false);
+    const trackData = data.slice(offset + 8, offset + 8 + length);
+
+    if (
+      trackData.length >= 4 &&
+      trackData[0] === 0x00 &&
+      trackData[1] === 0xff &&
+      trackData[2] === 0x03
+    ) {
+      const nameLength = trackData[3];
+      const name = new TextDecoder().decode(trackData.slice(4, 4 + nameLength));
+      names.push(name);
+    }
+
+    offset += 8 + length;
+  }
+
+  return names;
+}
+
+describe('SongsterrToAlphaTabConverter', () => {
+  describe('full song conversion (song-1)', () => {
+    it('exports a gp7 file from multi-track revision payloads', () => {
+      const tracks: SongsterrRevisionTrackInput[] = [];
+      const trackMetas: SongsterrStateMetaCurrentTrack[] = [];
+
+      for (let i = 0; i <= 8; i++) {
+        const revision = loadRevision(`test-data/song-1/${i}.json`);
+        const meta = makeTrackMeta({
+          partId: i,
+          instrumentId: revision.instrumentId ?? 27,
+          title: revision.name ?? `Track ${i}`
+        });
+        trackMetas.push(meta);
+        tracks.push({ trackMeta: meta, revision });
+      }
+
+      const converter = new SongsterrToAlphaTabConverter();
+      const { data, warnings } = converter.toGp7({
+        meta: makeMeta(trackMetas, { title: 'Song 1', artist: 'Test' }),
+        revisions: tracks
+      });
+
+      expect(data.length).toBeGreaterThan(0);
+      // With our fixes, there should be far fewer warnings than before
+      // (no more slide_unsupported for "below"/"downwards", no duration_approximated for tuplets)
+      const slideWarnings = warnings.filter((w) => w.code === 'slide_unsupported');
+      expect(slideWarnings.length).toBe(0);
+    });
+  });
+
+  describe('string numbering', () => {
+    it('inverts string numbering: Songsterr string 0 (high e) → alphaTab string 6 (high e) for 6-string', async () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [
+                      { fret: 5, string: 0 },
+                      { fret: 3, string: 5 }
+                    ],
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const meta = makeTrackMeta({ tuning: [64, 59, 55, 50, 45, 40] });
+      const converter = new SongsterrToAlphaTabConverter();
+      const { data } = converter.toGp7({
+        meta: makeMeta([meta]),
+        revisions: [{ trackMeta: meta, revision }]
+      });
+      expect(data.length).toBeGreaterThan(0);
+
+      // Re-import to verify string mapping
+      const settings = new (await import('@coderline/alphatab')).Settings();
+      const score = (await import('@coderline/alphatab')).importer.ScoreLoader.loadScoreFromBytes(data, settings);
+      const beat = score.tracks[0].staves[0].bars[0].voices[0].beats[0];
+      // Songsterr string 0 → alphaTab string 6 (numStrings - 0 = 6)
+      const highENote = beat.notes.find((n: { fret: number }) => n.fret === 5);
+      expect(highENote!.string).toBe(6);
+      // Songsterr string 5 → alphaTab string 1 (numStrings - 5 = 1)
+      const lowENote = beat.notes.find((n: { fret: number }) => n.fret === 3);
+      expect(lowENote!.string).toBe(1);
+    });
+  });
+
+  describe('palm mute', () => {
+    it('propagates beat-level palmMute to all notes', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [
+                      { fret: 3, string: 4 },
+                      { fret: 3, string: 5 }
+                    ],
+                    palmMute: true,
+                    duration: [1, 8],
+                    type: 8
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('dead notes', () => {
+    it('maps dead notes correctly', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [{ fret: 8, string: 3, dead: true }],
+                    duration: [1, 8],
+                    type: 8
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('hammer-on / pull-off', () => {
+    it('maps hp flag to isHammerPullOrigin', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [{ fret: 9, string: 2, hp: true }],
+                    duration: [1, 8],
+                    type: 8
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('vibrato', () => {
+    it('handles slight vibrato', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [{ fret: 10, string: 3, vibrato: true }],
+                    vibrato: true,
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+
+    it('handles wide vibrato', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [{ fret: 9, string: 2, wideVibrato: true }],
+                    wideVibrato: true,
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('slides', () => {
+    it('maps "below" slide correctly', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [{ fret: 10, string: 3, slide: 'below' }],
+                    duration: [1, 8],
+                    type: 8
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data, warnings } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+      expect(warnings.filter((w) => w.code === 'slide_unsupported').length).toBe(0);
+    });
+
+    it('maps "downwards" slide correctly', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [{ fret: 10, string: 2, slide: 'downwards' }],
+                    duration: [1, 2],
+                    type: 2
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data, warnings } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+      expect(warnings.filter((w) => w.code === 'slide_unsupported').length).toBe(0);
+    });
+  });
+
+  describe('harmonics', () => {
+    it('maps artificial harmonics', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [
+                      {
+                        fret: 9,
+                        string: 2,
+                        harmonic: 'artificial',
+                        harmonicFret: 5
+                      }
+                    ],
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+
+    it('maps pinch harmonics', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [
+                      {
+                        fret: 3,
+                        string: 5,
+                        harmonic: 'pinch',
+                        harmonicFret: 24
+                      }
+                    ],
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('bends', () => {
+    it('maps bend with point curve', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [
+                      {
+                        fret: 3,
+                        string: 0,
+                        bend: {
+                          // tone: 100 = 1 full tone bend; expected alphaTab value = 100/25 = 4
+                          tone: 100,
+                          points: [
+                            { position: 0, tone: 0 },
+                            { position: 30, tone: 100 },
+                            { position: 60, tone: 100 }
+                          ]
+                        }
+                      }
+                    ],
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+
+    it('maps prebend (hold)', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [
+                      {
+                        fret: 3,
+                        string: 0,
+                        bend: {
+                          tone: 50,
+                          points: [
+                            { position: 0, tone: 50 },
+                            { position: 30, tone: 50 },
+                            { position: 60, tone: 50 }
+                          ]
+                        }
+                      }
+                    ],
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+
+    it('maps prebend release', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [
+                      {
+                        fret: 3,
+                        string: 0,
+                        bend: {
+                          tone: 100,
+                          points: [
+                            { position: 0, tone: 100 },
+                            { position: 60, tone: 0 }
+                          ]
+                        }
+                      }
+                    ],
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+
+    it('maps prebend bend', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [
+                      {
+                        fret: 3,
+                        string: 0,
+                        bend: {
+                          tone: 100,
+                          points: [
+                            { position: 0, tone: 50 },
+                            { position: 30, tone: 100 },
+                            { position: 60, tone: 100 }
+                          ]
+                        }
+                      }
+                    ],
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+
+    it('maps prebend release 1/4 step', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [
+                      {
+                        fret: 3,
+                        string: 0,
+                        bend: {
+                          tone: 50,
+                          points: [
+                            { position: 0, tone: 50 },
+                            { position: 20, tone: 50 },
+                            { position: 40, tone: 0 },
+                            { position: 60, tone: 0 }
+                          ]
+                        }
+                      }
+                    ],
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+
+    it('downsamples 5-point bend-release to 3 points', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [
+                      {
+                        fret: 3,
+                        string: 0,
+                        bend: {
+                          tone: 50,
+                          points: [
+                            { position: 0, tone: 0 },
+                            { position: 15, tone: 50 },
+                            { position: 30, tone: 50 },
+                            { position: 45, tone: 0 },
+                            { position: 60, tone: 0 }
+                          ]
+                        }
+                      }
+                    ],
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('pick stroke', () => {
+    it('maps down pick stroke', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [
+                      { fret: 13, string: 0 },
+                      { fret: 11, string: 1 }
+                    ],
+                    pickStroke: 'down',
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('tuplets', () => {
+    it('maps triplet correctly', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [{ fret: 2, string: 4 }],
+                    type: 8,
+                    tuplet: 3,
+                    duration: [1, 12],
+                    tupletStart: true
+                  },
+                  {
+                    notes: [{ fret: 2, string: 4 }],
+                    type: 8,
+                    tuplet: 3,
+                    duration: [1, 12]
+                  },
+                  {
+                    notes: [{ fret: 2, string: 4 }],
+                    type: 8,
+                    tuplet: 3,
+                    duration: [1, 12],
+                    tupletStop: true
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data, warnings } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+      // Triplets should not produce duration_approximated warnings
+      const durationWarnings = warnings.filter(
+        (w) => w.code === 'duration_approximated'
+      );
+      expect(durationWarnings.length).toBe(0);
+    });
+  });
+
+  describe('ghost notes', () => {
+    it('maps ghost notes', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [{ fret: 5, string: 3, ghost: true }],
+                    duration: [1, 8],
+                    type: 8
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('staccato', () => {
+    it('maps staccato notes', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [{ fret: 0, string: 5, staccato: true }],
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('accentuated notes', () => {
+    it('maps accentuated notes', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [{ fret: 7, string: 2, accentuated: true }],
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('multiple voices', () => {
+    it('converts both voices in a measure', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [{ fret: 5, string: 0 }],
+                    duration: [1, 2],
+                    type: 2
+                  }
+                ]
+              },
+              {
+                beats: [
+                  {
+                    notes: [{ fret: 0, string: 5 }],
+                    duration: [1, 4],
+                    type: 4
+                  },
+                  {
+                    notes: [{ fret: 2, string: 5 }],
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data, warnings } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+      // Should NOT have "additional_voices_skipped" warnings
+      const voiceWarnings = warnings.filter(
+        (w) => w.code === 'additional_voices_skipped'
+      );
+      expect(voiceWarnings.length).toBe(0);
+    });
+  });
+
+  describe('rest beats', () => {
+    it('marks rest beats as isEmpty', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  { rest: true, duration: [1, 4], type: 4, notes: [] },
+                  {
+                    notes: [{ fret: 5, string: 0 }],
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('MIDI channel allocation', () => {
+    it('assigns unique channels to each non-drum track, skipping channel 9', async () => {
+      const alphaTabModule = await import('@coderline/alphatab');
+
+      const makeRevision = (): SongsterrRevisionTrackPayload => ({
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [{ fret: 0, string: 0 }],
+                    duration: [1, 1],
+                    type: 1
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      });
+
+      const tracks: SongsterrRevisionTrackInput[] = [];
+      const trackMetas: SongsterrStateMetaCurrentTrack[] = [];
+      for (let i = 0; i < 12; i++) {
+        const meta = makeTrackMeta({
+          partId: i,
+          instrumentId: i === 5 ? 1024 : 25, // track 5 is drums
+          title: `Track ${i}`,
+          isDrums: i === 5
+        });
+        trackMetas.push(meta);
+        tracks.push({ trackMeta: meta, revision: makeRevision() });
+      }
+
+      const converter = new SongsterrToAlphaTabConverter();
+      const { data } = converter.toGp7({
+        meta: makeMeta(trackMetas),
+        revisions: tracks
+      });
+
+      const settings = new alphaTabModule.Settings();
+      const score = alphaTabModule.importer.ScoreLoader.loadScoreFromBytes(data, settings);
+
+      const channels = score.tracks.map(
+        (t: { playbackInfo: { primaryChannel: number } }) => t.playbackInfo.primaryChannel
+      );
+      // Drum track should be on channel 9
+      expect(channels[5]).toBe(9);
+      // No two non-drum tracks share a channel
+      const nonDrumChannels = channels.filter((_: number, i: number) => i !== 5);
+      expect(new Set(nonDrumChannels).size).toBe(nonDrumChannels.length);
+      // No non-drum track uses channel 9
+      expect(nonDrumChannels).not.toContain(9);
+    });
+  });
+
+  describe('MIDI export', () => {
+    it('exports separate MIDI tracks for separate Songsterr tracks', () => {
+      const makeRevision = (): SongsterrRevisionTrackPayload => ({
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [{ fret: 0, string: 0 }],
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      });
+
+      const trackMetas = [
+        makeTrackMeta({ partId: 0, title: 'Guitar' }),
+        makeTrackMeta({ partId: 1, title: 'Bass', tuning: [43, 38, 33, 28] })
+      ];
+      const revisions: SongsterrRevisionTrackInput[] = [
+        { trackMeta: trackMetas[0], revision: makeRevision() },
+        { trackMeta: trackMetas[1], revision: makeRevision() }
+      ];
+
+      const converter = new SongsterrToAlphaTabConverter();
+      const { data } = converter.toMidi({
+        meta: makeMeta(trackMetas),
+        revisions
+      }, {
+        separateTracks: true
+      });
+
+      const header = readMidiHeader(data);
+      expect(header.format).toBe(1);
+      expect(header.trackCount).toBe(2);
+      expect(header.division).toBeGreaterThan(0);
+      expect(readMidiTrackNames(data)).toEqual(['Guitar', 'Bass']);
+    });
+
+    it('can keep the legacy single-track MIDI export', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [{ fret: 0, string: 0 }],
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const meta = makeTrackMeta({ partId: 0, title: 'Guitar' });
+      const converter = new SongsterrToAlphaTabConverter();
+      const { data } = converter.toMidi({
+        meta: makeMeta([meta]),
+        revisions: [{ trackMeta: meta, revision }]
+      });
+
+      const header = readMidiHeader(data);
+      expect(header.format).toBe(0);
+      expect(header.trackCount).toBe(1);
+    });
+  });
+
+  describe('drum percussion articulation', () => {
+    it('sets percussionArticulation from fret values on drum tracks', async () => {
+      const alphaTabModule = await import('@coderline/alphatab');
+
+      const revision: SongsterrRevisionTrackPayload = {
+        instrumentId: 1024,
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [
+                      { fret: 36, string: 0 }, // kick
+                      { fret: 38, string: 1 }  // snare
+                    ],
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const meta = makeTrackMeta({
+        instrumentId: 1024,
+        isDrums: true,
+        title: 'Drums',
+        tuning: []
+      });
+      const converter = new SongsterrToAlphaTabConverter();
+      const { data } = converter.toGp7({
+        meta: makeMeta([meta]),
+        revisions: [{ trackMeta: meta, revision }]
+      });
+
+      const settings = new alphaTabModule.Settings();
+      const score = alphaTabModule.importer.ScoreLoader.loadScoreFromBytes(data, settings);
+
+      const beat = score.tracks[0].staves[0].bars[0].voices[0].beats[0];
+      // After round-trip, verify the articulations resolve to correct drum sounds
+      const rTrack = score.tracks[0];
+      const articulations = beat.notes.map((n: { percussionArticulation: number }) => {
+        const art = rTrack.percussionArticulations[n.percussionArticulation];
+        return art?.outputMidiNumber;
+      });
+      expect(articulations).toContain(36); // kick (MIDI 36)
+      expect(articulations).toContain(38); // snare (MIDI 38)
+    });
+
+    it('preserves all drum notes through GP7 round-trip (multi-note beats)', async () => {
+      const alphaTabModule = await import('@coderline/alphatab');
+
+      const revision: SongsterrRevisionTrackPayload = {
+        instrumentId: 1024,
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [
+                      { fret: 42, string: 0 }, // hi-hat closed
+                      { fret: 38, string: 1 }, // snare
+                      { fret: 36, string: 2 }  // kick
+                    ],
+                    duration: [1, 4],
+                    type: 4
+                  },
+                  {
+                    notes: [
+                      { fret: 42, string: 0 }  // hi-hat closed only
+                    ],
+                    duration: [1, 4],
+                    type: 4
+                  },
+                  {
+                    notes: [
+                      { fret: 42, string: 0 }, // hi-hat closed
+                      { fret: 38, string: 1 }  // snare
+                    ],
+                    duration: [1, 4],
+                    type: 4
+                  },
+                  {
+                    notes: [
+                      { fret: 42, string: 0 }  // hi-hat closed only
+                    ],
+                    duration: [1, 4],
+                    type: 4
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      const meta = makeTrackMeta({
+        instrumentId: 1024,
+        isDrums: true,
+        title: 'Drums',
+        tuning: []
+      });
+      const converter = new SongsterrToAlphaTabConverter();
+      const { data } = converter.toGp7({
+        meta: makeMeta([meta]),
+        revisions: [{ trackMeta: meta, revision }]
+      });
+
+      const settings = new alphaTabModule.Settings();
+      const score = alphaTabModule.importer.ScoreLoader.loadScoreFromBytes(data, settings);
+
+      // Count total input notes
+      const inputBeats = revision.measures[0]?.voices?.[0]?.beats ?? [];
+      const inputNotes = inputBeats.reduce(
+        (sum, b) => sum + (b.notes?.length ?? 0), 0
+      );
+      expect(inputNotes).toBe(7);
+
+      // Count total output notes after round-trip
+      const beats = score.tracks[0].staves[0].bars[0].voices[0].beats;
+      const outputNotes = beats.reduce(
+        (sum: number, b: { notes: unknown[] }) => sum + b.notes.length, 0
+      );
+      expect(outputNotes).toBe(inputNotes);
+    });
+
+    it('renders drums correctly on the very first conversion after a cold start', async () => {
+      // The MIDI→articulation index map is cached in module state. It used to be
+      // built lazily while a score was already under construction, which corrupted
+      // that score: every bar came out with duplicated voices and a duplicated set
+      // of beats whose notes had no articulation. Those silent beats filled the
+      // measure, pushing the real drum beats past the bar end so they never played.
+      //
+      // Only the FIRST conversion in a process was affected, so warm test runs (and
+      // every test above this one) hid it. Reset the module registry to get a
+      // genuinely cold converter, as a fresh serverless invocation would.
+      vi.resetModules();
+      const { SongsterrToAlphaTabConverter: ColdConverter } = await import(
+        './songsterr-to-alphatab.converter'
+      );
+      const alphaTabModule = await import('@coderline/alphatab');
+
+      const beat = (frets: number[]) => ({
+        notes: frets.map((fret, i) => ({ fret, string: i })),
+        duration: [1, 4] as [number, number],
+        type: 4
+      });
+      const measure = {
+        voices: [{ beats: [beat([42, 36]), beat([42, 38]), beat([42, 36]), beat([42, 38])] }],
+        signature: [4, 4] as [number, number]
+      };
+      const revision: SongsterrRevisionTrackPayload = {
+        instrumentId: 1024,
+        measures: [measure, structuredClone(measure)]
+      };
+
+      const meta = makeTrackMeta({
+        instrumentId: 1024,
+        isDrums: true,
+        title: 'Drums',
+        tuning: []
+      });
+      const { data } = new ColdConverter().toGp7({
+        meta: makeMeta([meta]),
+        revisions: [{ trackMeta: meta, revision }]
+      });
+
+      const settings = new alphaTabModule.Settings();
+      const score = alphaTabModule.importer.ScoreLoader.loadScoreFromBytes(data, settings);
+      const staff = score.tracks[0].staves[0];
+
+      expect(staff.bars).toHaveLength(2);
+      for (const bar of staff.bars) {
+        // A single source voice must not be duplicated...
+        expect(bar.voices).toHaveLength(1);
+        // ...and the 4 source beats must not be doubled to 8.
+        expect(bar.voices[0].beats).toHaveLength(4);
+      }
+
+      const notes = staff.bars.flatMap((b: { voices: { beats: { notes: unknown[] }[] }[] }) =>
+        b.voices[0].beats.flatMap((bt) => bt.notes)
+      ) as { percussionArticulation: number }[];
+      expect(notes).toHaveLength(16);
+
+      // Every note must carry a real articulation (-1 == silent).
+      expect(notes.every((n) => n.percussionArticulation >= 0)).toBe(true);
+
+      const midi = notes.map(
+        (n) => score.tracks[0].percussionArticulations[n.percussionArticulation]?.outputMidiNumber
+      );
+      expect(new Set(midi)).toEqual(new Set([42, 36, 38]));
+    });
+  });
+
+  describe('varying voice counts across measures', () => {
+    it('pads bars so all have the same voice count (prevents _chain crash)', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [{ fret: 5, string: 0 }],
+                    duration: [1, 2],
+                    type: 2
+                  }
+                ]
+              },
+              {
+                beats: [
+                  {
+                    notes: [{ fret: 0, string: 5 }],
+                    duration: [1, 2],
+                    type: 2
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          },
+          {
+            voices: [
+              {
+                beats: [
+                  {
+                    notes: [{ fret: 3, string: 0 }],
+                    duration: [1, 1],
+                    type: 1
+                  }
+                ]
+              }
+            ],
+            signature: [4, 4]
+          }
+        ]
+      };
+
+      // This would crash before the fix with:
+      // TypeError: Cannot read properties of undefined (reading 'beats')
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('full song conversion (song-3)', () => {
+    it('exports a gp7 file from song-3 revision payloads', () => {
+      const tracks: SongsterrRevisionTrackInput[] = [];
+      const trackMetas: SongsterrStateMetaCurrentTrack[] = [];
+
+      for (let i = 0; i <= 10; i++) {
+        const content = readFileSync(`test-data/song-3/${i}.json`, 'utf-8');
+        if (!content.trim()) continue; // skip empty files
+        const revision: SongsterrRevisionTrackPayload = JSON.parse(content);
+        const meta = makeTrackMeta({
+          partId: i,
+          instrumentId: revision.instrumentId ?? 27,
+          title: revision.name ?? `Track ${i}`
+        });
+        trackMetas.push(meta);
+        tracks.push({ trackMeta: meta, revision });
+      }
+
+      const converter = new SongsterrToAlphaTabConverter();
+      const { data } = converter.toGp7({
+        meta: makeMeta(trackMetas, { title: 'Song 3', artist: 'Test' }),
+        revisions: tracks
+      });
+
+      expect(data.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('marker format', () => {
+    it('handles string markers', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [{ beats: [] }],
+            signature: [4, 4],
+            marker: 'Intro'
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+
+    it('handles object markers', () => {
+      const revision: SongsterrRevisionTrackPayload = {
+        measures: [
+          {
+            voices: [{ beats: [] }],
+            signature: [4, 4],
+            marker: { text: '[A] Intro', width: 100 }
+          }
+        ]
+      };
+
+      const { data } = convertSingle(revision);
+      expect(data.length).toBeGreaterThan(0);
+    });
+  });
+});
