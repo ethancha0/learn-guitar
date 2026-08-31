@@ -1,4 +1,5 @@
 import { Guitar } from "lucide-react";
+import { AuthButton } from "@/components/auth/AuthButton";
 import { SidebarNav } from "./SidebarNav";
 
 /** Persistent nav rail. Hidden below `md`, where `MobileTopBar` takes over. */
@@ -11,6 +12,10 @@ export function Sidebar() {
       </div>
 
       <SidebarNav />
+
+      <div className="mt-auto">
+        <AuthButton />
+      </div>
     </aside>
   );
 }

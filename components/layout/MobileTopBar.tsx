@@ -3,6 +3,7 @@
 import { useState } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Guitar, Menu, X } from "lucide-react";
+import { AuthButton } from "@/components/auth/AuthButton";
 import { Button } from "@/components/ui/Button";
 import { DialogOverlay, DialogPortal } from "@/components/ui/Dialog";
 import { SidebarNav } from "./SidebarNav";
@@ -44,6 +45,10 @@ export function MobileTopBar() {
             </div>
 
             <SidebarNav onNavigate={() => setOpen(false)} />
+
+            <div className="mt-auto">
+              <AuthButton />
+            </div>
           </DialogPrimitive.Content>
         </DialogPortal>
       </DialogPrimitive.Root>
@@ -52,6 +57,10 @@ export function MobileTopBar() {
         <Guitar className="h-4 w-4 text-accent" />
         Learn Bass
       </span>
+
+      <div className="ml-auto">
+        <AuthButton compact />
+      </div>
     </header>
   );
 }

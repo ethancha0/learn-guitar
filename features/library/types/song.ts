@@ -15,4 +15,7 @@ export interface Song {
    * feed alphaTab in the player. Present on user-imported songs only.
    */
   tabData?: string;
+  tabStoragePath?: string;
+  audioStoragePath?: string;
+  persisted?: boolean;
 }

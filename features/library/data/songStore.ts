@@ -3,6 +3,7 @@
 import { useSyncExternalStore } from "react";
 import type { Song } from "../types/song";
 import { songs as seedSongs, getSongById as getSeedSongById } from "./songs";
+import { useSupabaseSongs } from "./supabaseSongStore";
 
 /**
  * Client-side store for user-imported songs. The seed list in `songs.ts` stays
@@ -19,6 +20,11 @@ export interface ImportedSong extends Song {
   /** Original file names, for display only. */
   tabFileName: string;
   audioFileNames: string[];
+  /** Supabase storage paths for account-backed imports. */
+  tabStoragePath?: string;
+  audioStoragePath?: string;
+  /** True when this song is known to exist in the signed-in user's account. */
+  persisted?: boolean;
 }
 
 function read(): ImportedSong[] {
@@ -86,8 +92,14 @@ export function useImportedSongs(): ImportedSong[] {
  */
 export function useAllSongs(): Song[] {
   const imported = useImportedSongs();
+  const remote = useSupabaseSongs();
   const installed = new Set(imported.map((s) => s.id));
-  return [...imported, ...seedSongs.filter((s) => !installed.has(s.id))];
+  const visibleImported = [...imported];
+  for (const song of remote) {
+    if (!installed.has(song.id)) visibleImported.push(song);
+  }
+  const visible = new Set(visibleImported.map((s) => s.id));
+  return [...visibleImported, ...seedSongs.filter((s) => !visible.has(s.id))];
 }
 
 export function useSongById(id: string): Song | undefined {

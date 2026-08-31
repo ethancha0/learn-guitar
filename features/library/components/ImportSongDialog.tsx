@@ -16,6 +16,10 @@ import {
 } from "@/components/ui/Dialog";
 import { cn } from "@/lib/cn";
 import { addImportedSong, type ImportedSong } from "../data/songStore";
+import {
+  uploadSongToAccount,
+  dispatchSupabaseSongsChanged,
+} from "../data/supabaseSongStore";
 import { bytesToBase64 } from "../data/tabFile";
 import { putBackingAudio } from "@/features/player/data/audioStore";
 import { queueAlignment } from "@/features/player/data/alignmentQueue";
@@ -223,6 +227,25 @@ export function ImportSongDialog() {
         audioBlob: audioFiles[0],
         audioDurationSec: durationSec || undefined,
       });
+
+      try {
+        const persisted = await uploadSongToAccount({
+          song,
+          tabFile,
+          audioFile: audioFiles[0],
+        });
+        if (persisted) {
+          addImportedSong({ ...persisted, tabData });
+          dispatchSupabaseSongsChanged();
+        }
+      } catch (err) {
+        console.error("[ImportSongDialog] Supabase upload failed", err);
+        setError(
+          "Saved on this device, but account sync failed. Check your Supabase setup and try signing in again.",
+        );
+        setBusy(false);
+        return;
+      }
 
       setOpen(false);
       reset();

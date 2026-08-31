@@ -4,8 +4,8 @@ UI foundation for a bass-guitar learning app (synced tabs + rhythm-game feedback
 
 Songs imported through the **Import song** dialog (tab file + audio) open the
 player, where their Guitar Pro / PowerTab file is rendered and played back with
-[alphaTab](https://alphatab.net). Seed songs in `features/library/data` are still
-mock-only and show a placeholder score.
+[alphaTab](https://alphatab.net). A fresh library starts empty until the user
+imports songs or signs in to load account-backed imports.
 
 ## Run
 
@@ -29,6 +29,14 @@ Imported songs (tab bytes as base64 + audio file names + chosen instrument) are
 persisted to `localStorage` (`features/library/data/songStore.ts`); the backing
 mp3 is too large for `localStorage` so it goes to IndexedDB
 (`features/player/data/audioStore.ts`).
+
+When Supabase is configured and the user signs in with Google, new imports are
+also saved to their account. Set `NEXT_PUBLIC_SUPABASE_URL` and
+`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` in `.env.local`, run
+`supabase/schema.sql` in the Supabase SQL editor, then enable Google in
+Supabase Auth. In Google Cloud, add `http://localhost:3000` as an authorized
+JavaScript origin for local development, and use Supabase's Google callback URL
+for the OAuth redirect URI. The app redirects through `/auth/callback`.
 
 The player renders one score track at a time — pick the instrument from the
 transport dropdown or the mixer's eye toggles; the choice is remembered per song.

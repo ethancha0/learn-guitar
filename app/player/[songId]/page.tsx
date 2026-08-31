@@ -4,7 +4,11 @@ import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
-import { useSongById } from "@/features/library/data/songStore";
+import {
+  addImportedSong,
+  useSongById,
+} from "@/features/library/data/songStore";
+import { hydrateSupabaseSong } from "@/features/library/data/supabaseSongStore";
 import { ScoreView } from "@/features/player/components/ScoreView";
 import { TransportBar } from "@/features/player/components/TransportBar";
 import { AlphaTabPlayer } from "@/features/player/components/AlphaTabPlayer";
@@ -19,8 +23,34 @@ export default function PlayerPage({
   const { songId } = use(params);
   const song = useSongById(songId);
   const [hydrated, setHydrated] = useState(false);
+  const [checkingAccount, setCheckingAccount] = useState(false);
+  const [accountChecked, setAccountChecked] = useState(false);
 
   useEffect(() => setHydrated(true), []);
+
+  useEffect(() => {
+    if (!hydrated || song?.tabData || checkingAccount || accountChecked) return;
+
+    let cancelled = false;
+    setCheckingAccount(true);
+    hydrateSupabaseSong(songId)
+      .then((remoteSong) => {
+        if (!cancelled && remoteSong) addImportedSong(remoteSong);
+      })
+      .catch((err) =>
+        console.error("[PlayerPage] could not hydrate account song", err),
+      )
+      .finally(() => {
+        if (!cancelled) {
+          setCheckingAccount(false);
+          setAccountChecked(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [accountChecked, checkingAccount, hydrated, song?.tabData, songId]);
 
   if (!song) {
     // Imported songs live in localStorage, so wait for hydration before
@@ -29,6 +59,13 @@ export default function PlayerPage({
       return (
         <div className="flex flex-1 items-center justify-center text-sm text-zinc-500">
           Loading song…
+        </div>
+      );
+    }
+    if (checkingAccount || !accountChecked) {
+      return (
+        <div className="flex flex-1 items-center justify-center text-sm text-zinc-500">
+          Loading account song…
         </div>
       );
     }
@@ -57,6 +94,10 @@ export default function PlayerPage({
 
       {song.tabData ? (
         <AlphaTabPlayer songId={songId} tabData={song.tabData} />
+      ) : song.persisted && (checkingAccount || !accountChecked) ? (
+        <div className="flex flex-1 items-center justify-center text-sm text-zinc-500">
+          Loading account song…
+        </div>
       ) : (
         <>
           <ScoreView />
