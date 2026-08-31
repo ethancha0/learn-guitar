@@ -1,8 +1,6 @@
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { hasLocalYtDlp } from "./binaries";
-import { getInnertubeAudio, innertubeAudioExtension } from "./innertube";
 import {
   contentTypeForExtension,
   extensionFromPath,
@@ -12,9 +10,10 @@ import {
   validateYouTubeVideoIdOrUrl,
   youtubeWatchUrl,
 } from "./metadata";
+import { resolveYouTubeProvider } from "./provider";
+import { workerDownload } from "./workerClient";
 import {
   type DownloadedYouTubeAudio,
-  type MediaMetadata,
   YouTubeToolError,
   YOUTUBE_MAX_DURATION_SEC,
 } from "./types";
@@ -89,13 +88,7 @@ async function normalizePlaybackAudio(
   dir: string,
   videoId: string,
 ): Promise<string> {
-  let metadata: MediaMetadata;
-  try {
-    metadata = await inspectMedia(inputPath);
-  } catch {
-    return inputPath;
-  }
-
+  const metadata = await inspectMedia(inputPath);
   const extension = extensionFromPath(inputPath);
   const isAac =
     metadata.codec === "aac" ||
@@ -140,7 +133,23 @@ async function normalizePlaybackAudio(
   return outputPath;
 }
 
-async function downloadWithYtDlp(
+export async function downloadYouTubeAudio(
+  input: string,
+  options: { maxDurationSec?: number } = {},
+): Promise<DownloadedYouTubeAudio> {
+  const videoId = validateYouTubeVideoIdOrUrl(input);
+  const maxDurationSec = options.maxDurationSec ?? YOUTUBE_MAX_DURATION_SEC;
+  const provider = resolveYouTubeProvider();
+
+  if (provider.kind === "worker") {
+    return workerDownload(provider.config, videoId, { maxDurationSec });
+  }
+
+  return downloadYouTubeAudioLocal(videoId, maxDurationSec);
+}
+
+/** Dev-only path: spawns yt-dlp/ffmpeg on this machine. */
+async function downloadYouTubeAudioLocal(
   videoId: string,
   maxDurationSec: number,
 ): Promise<DownloadedYouTubeAudio> {
@@ -184,13 +193,7 @@ async function downloadWithYtDlp(
     const downloadedPath = await findDownloadedFile(dir);
     const audioPath = await normalizePlaybackAudio(downloadedPath, dir, videoId);
     const extension = extensionFromPath(audioPath);
-    let metadata: MediaMetadata;
-    try {
-      metadata = await inspectMedia(audioPath);
-    } catch {
-      const sizeBytes = (await stat(audioPath)).size;
-      metadata = { durationSec, sizeBytes };
-    }
+    const metadata = await inspectMedia(audioPath);
     const sizeBytes = metadata.sizeBytes ?? (await stat(audioPath)).size;
     const title = info.title ?? videoId;
     const uploader = info.uploader ?? info.channel ?? "YouTube";
@@ -215,92 +218,13 @@ async function downloadWithYtDlp(
   }
 }
 
-async function downloadWithInnertube(
-  videoId: string,
-  maxDurationSec: number,
-): Promise<DownloadedYouTubeAudio> {
-  const info = await getInnertubeAudio(videoId);
-  if (info.durationSec > maxDurationSec) {
-    throw new YouTubeToolError(
-      "DURATION_TOO_LONG",
-      `Video is ${Math.round(info.durationSec / 60)} minutes long; the current limit is ${Math.round(maxDurationSec / 60)} minutes.`,
-    );
-  }
-
-  const dir = await mkdtemp(path.join(tmpdir(), "yt-download-"));
-  const extension = innertubeAudioExtension(info.mimeType);
-  const audioPath = path.join(dir, `${videoId}.${extension}`);
-
-  try {
-    const response = await fetch(info.url, {
-      headers: {
-        "User-Agent":
-          "com.google.android.youtube/19.47.53 (Linux; U; Android 14) gzip",
-      },
-    });
-    if (!response.ok) {
-      throw new YouTubeToolError(
-        "DOWNLOAD_FAILED",
-        `YouTube audio fetch failed (${response.status}).`,
-      );
-    }
-
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.byteLength < 1000) {
-      throw new YouTubeToolError(
-        "DOWNLOAD_FAILED",
-        "YouTube audio fetch returned an empty file.",
-      );
-    }
-    await writeFile(audioPath, bytes);
-
-    const sizeBytes = info.sizeBytes ?? bytes.byteLength;
-    const metadata: MediaMetadata = {
-      durationSec: info.durationSec,
-      codec: info.mimeType,
-      sampleRate: info.sampleRate,
-      channels: info.channels,
-      bitRate: info.bitRate,
-      sizeBytes,
-    };
-
-    return {
-      videoId,
-      title: info.title,
-      uploader: info.author,
-      durationSec: info.durationSec,
-      thumbnailUrl: info.thumbnailUrl,
-      path: audioPath,
-      fileName: `${safeFileName(info.title)}-${videoId}.${extension}`,
-      extension,
-      contentType: contentTypeForExtension(extension),
-      sizeBytes,
-      metadata,
-      cleanup: () => rm(dir, { recursive: true, force: true }),
-    };
-  } catch (err) {
-    await rm(dir, { recursive: true, force: true });
-    throw err;
-  }
-}
-
-export async function downloadYouTubeAudio(
-  input: string,
-  options: { maxDurationSec?: number } = {},
-): Promise<DownloadedYouTubeAudio> {
-  const videoId = validateYouTubeVideoIdOrUrl(input);
-  const maxDurationSec = options.maxDurationSec ?? YOUTUBE_MAX_DURATION_SEC;
-
-  try {
-    return await downloadWithInnertube(videoId, maxDurationSec);
-  } catch (err) {
-    if (!hasLocalYtDlp()) throw err;
-    return downloadWithYtDlp(videoId, maxDurationSec);
-  }
-}
-
 export async function readDownloadedAudio(
   audio: DownloadedYouTubeAudio,
 ): Promise<Buffer> {
-  return readFile(audio.path);
+  if (audio.bytes) return audio.bytes;
+  if (audio.path) return readFile(audio.path);
+  throw new YouTubeToolError(
+    "DOWNLOAD_FAILED",
+    "The downloaded audio has neither bytes nor a file path.",
+  );
 }

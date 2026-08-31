@@ -1,0 +1,29 @@
+# fly launch --no-deploy   (then edit `app` to your chosen name)
+app = "learn-guitar-ytdlp"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.http_options]
+    # Long enough for a 15-minute video download to finish.
+    idle_timeout = 300
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    method = "GET"
+    timeout = "10s"
+    path = "/health"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

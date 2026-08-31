@@ -1,4 +1,4 @@
-/** Public Songsterr catalogue types. Tab bytes come from `/api/songsterr/download`. */
+/** Public Songsterr metadata. No tablature content is fetched or stored. */
 
 export const SONGSTERR_ORIGIN = "https://www.songsterr.com";
 

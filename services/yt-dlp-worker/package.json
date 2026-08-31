@@ -1,0 +1,14 @@
+{
+  "name": "yt-dlp-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Container-hosted yt-dlp/ffmpeg service for YouTube search and audio download.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "YT_WORKER_ALLOW_ANONYMOUS=1 node server.mjs"
+  }
+}

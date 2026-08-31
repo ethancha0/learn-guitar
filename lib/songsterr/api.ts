@@ -1,4 +1,3 @@
-import { getSongsterrJson } from "./http";
 import {
   SONGSTERR_ORIGIN,
   SongsterrError,
@@ -8,6 +7,7 @@ import {
 } from "./types";
 import { parseSongsterrUrl, type SongsterrRef } from "./url";
 
+const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_QUERY_LENGTH = 200;
 const MAX_LINKED_VIDEOS = 8;
 
@@ -49,13 +49,6 @@ function trackFamily(instrumentId: number | undefined, name: string): SongsterrT
   if (instrumentId >= 32 && instrumentId <= 39) return "bass";
   if (instrumentId >= 24 && instrumentId <= 31) return "guitar";
   return "other";
-}
-
-/** A ref without a pinned revision resolves to whatever Songsterr serves today. */
-export function metaPath(ref: SongsterrRef): string {
-  return ref.revisionId
-    ? `/api/meta/${ref.songId}/${ref.revisionId}`
-    : `/api/meta/${ref.songId}`;
 }
 
 export function songsterrSongUrl(songId: number, trackIndex?: number): string {
@@ -107,6 +100,43 @@ function toSong(raw: RawSong): SongsterrSong | null {
   };
 }
 
+async function getJson<T>(path: string): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  let response: Response;
+  try {
+    response = await fetch(`${SONGSTERR_ORIGIN}${path}`, {
+      signal: controller.signal,
+      headers: { Accept: "application/json" },
+    });
+  } catch (err) {
+    throw new SongsterrError(
+      "UPSTREAM_FAILED",
+      "Could not reach Songsterr.",
+      err instanceof Error ? err.message : undefined,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (response.status === 404) {
+    throw new SongsterrError("NOT_FOUND", "That song is not on Songsterr.");
+  }
+  if (!response.ok) {
+    throw new SongsterrError(
+      "UPSTREAM_FAILED",
+      `Songsterr returned ${response.status}.`,
+    );
+  }
+
+  try {
+    return (await response.json()) as T;
+  } catch {
+    throw new SongsterrError("UPSTREAM_FAILED", "Songsterr returned invalid JSON.");
+  }
+}
+
 /** Search Songsterr's public catalogue for songs matching a free-text query. */
 export async function searchSongsterr(
   query: string,
@@ -124,7 +154,7 @@ export async function searchSongsterr(
   }
 
   const size = Math.min(Math.max(options.maxResults ?? 10, 1), 25);
-  const raw = await getSongsterrJson<RawSong[]>(
+  const raw = await getJson<RawSong[]>(
     `/api/songs?pattern=${encodeURIComponent(q)}&size=${size}`,
   );
 
@@ -139,7 +169,11 @@ export async function resolveSongsterrSong(
   input: string,
 ): Promise<{ song: SongsterrSong; ref: SongsterrRef }> {
   const ref = parseSongsterrUrl(input);
-  const song = toSong(await getSongsterrJson<RawSong>(metaPath(ref)));
+  const path = ref.revisionId
+    ? `/api/meta/${ref.songId}/${ref.revisionId}`
+    : `/api/meta/${ref.songId}`;
+
+  const song = toSong(await getJson<RawSong>(path));
   if (!song) {
     throw new SongsterrError("NOT_FOUND", "Songsterr returned no song for that link.");
   }

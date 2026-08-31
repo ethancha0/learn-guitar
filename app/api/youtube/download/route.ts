@@ -1,25 +1,27 @@
 import { readDownloadedAudio, downloadYouTubeAudio } from "@/lib/youtube/download";
-import { YouTubeToolError } from "@/lib/youtube/types";
+import {
+  httpStatusForYouTubeError,
+  YouTubeToolError,
+} from "@/lib/youtube/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-function jsonError(message: string, status: number, details?: string) {
-  return Response.json({ error: message, details }, { status });
+function jsonError(
+  message: string,
+  status: number,
+  extra: { code?: string; details?: string } = {},
+) {
+  return Response.json({ error: message, ...extra }, { status });
 }
 
 function errorResponse(err: unknown) {
   if (err instanceof YouTubeToolError) {
-    const status =
-      err.code === "MISSING_DEPENDENCY"
-        ? 503
-        : err.code === "VALIDATION"
-          ? 400
-          : err.code === "DURATION_TOO_LONG"
-            ? 422
-            : 502;
-    return jsonError(err.message, status, err.details);
+    return jsonError(err.message, httpStatusForYouTubeError(err), {
+      code: err.code,
+      details: err.details,
+    });
   }
 
   return jsonError("YouTube audio download failed.", 500);

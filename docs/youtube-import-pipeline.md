@@ -208,7 +208,9 @@ ffmpeg
 ffprobe
 ```
 
-No YouTube API key or YouTube environment variable is required.
+No YouTube API key is required. No YouTube environment variable is required
+locally either — `YOUTUBE_WORKER_URL` is only needed for deployments that cannot
+spawn these binaries (see Deployment Notes).
 
 ## Testing Checklist
 
@@ -250,17 +252,58 @@ YouTube code, so webpack is the current reliable production-build check.
 ## Deployment Notes
 
 Hosting this feature requires a Node runtime that can execute local binaries and
-write temporary files. It is not a clean fit for constrained serverless
-functions unless the platform supports:
+write temporary files. That rules out Vercel's Node lambda, for two reasons:
 
-- Bundled `yt-dlp`, `ffmpeg`, and `ffprobe` binaries.
-- Writable temp storage.
-- Long request timeouts for downloads/conversion.
-- Enough memory and network egress.
+1. The `youtube-dl-exec` npm binary is a `#!/usr/bin/env python3` zipapp. It
+   works on a Mac with Homebrew Python; the Vercel image ships no `python3`, so
+   `spawn` fails. The feature therefore works locally and fails on production.
+2. Even with a standalone binary, YouTube blocks datacenter IP ranges with
+   "Sign in to confirm you're not a bot."
 
-A container or background worker is the cleaner production model. In production,
-download/conversion should probably be moved off the request path and tracked as
-a job.
+So production runs yt-dlp in a container instead: `services/yt-dlp-worker`.
+
+### Provider selection
+
+`lib/youtube/provider.ts` decides at request time:
+
+```text
+YOUTUBE_WORKER_URL set   -> worker  (HTTP call to services/yt-dlp-worker)
+nothing set, local dev   -> local   (spawn yt-dlp/ffmpeg on this machine)
+nothing set, on Vercel   -> MISSING_DEPENDENCY with a configuration message
+```
+
+`YOUTUBE_PROVIDER=local|worker` forces one explicitly.
+
+```text
+                 dev                             production
+                 ---                             ----------
+searchYouTube    spawn yt-dlp                    GET  worker /search
+downloadYouTube  spawn yt-dlp + ffmpeg           POST worker /download
+                                                   -> bytes + X-Audio-Metadata
+```
+
+Both paths return the same `YouTubeSearchResult[]` / `DownloadedYouTubeAudio`
+shapes, so the API routes and `ImportSongDialog` are unchanged. The worker owns
+the duration check, the AAC faststart remux, and the ffprobe inspection, so the
+Vercel function never needs `yt-dlp`, `ffmpeg`, or `ffprobe` — only the
+`DownloadedYouTubeAudio` it gets back. `bytes` is set on the worker path and
+`path` on the local path; `readDownloadedAudio` handles both.
+
+Environment variables:
+
+```text
+YOUTUBE_WORKER_URL     https://<worker-host>
+YOUTUBE_WORKER_TOKEN   shared secret, matches YT_WORKER_TOKEN on the worker
+```
+
+Setup, deploy steps, and the cookie/proxy options for YouTube's bot check are in
+`services/yt-dlp-worker/README.md`.
+
+### Still worth doing
+
+Download/conversion is still on the request path, bounded by the Vercel function
+timeout (`maxDuration = 300`). Long videos or a cold worker will eventually want
+a real job queue with the client polling for completion.
 
 ## Conversation Summary
 

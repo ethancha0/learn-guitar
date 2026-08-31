@@ -20,18 +20,29 @@ export interface MediaMetadata {
   sizeBytes?: number;
 }
 
-export interface DownloadedYouTubeAudio {
+/**
+ * Everything about a downloaded track except the audio itself. The worker
+ * returns this as base64 JSON in `X-Audio-Metadata`; the local yt-dlp path
+ * builds the same shape from ffprobe.
+ */
+export interface YouTubeAudioMeta {
   videoId: string;
   title: string;
   uploader: string;
   durationSec: number;
   thumbnailUrl?: string;
-  path: string;
   fileName: string;
   extension: string;
   contentType: string;
   sizeBytes: number;
   metadata: MediaMetadata;
+}
+
+export interface DownloadedYouTubeAudio extends YouTubeAudioMeta {
+  /** Set when the audio landed on local disk (the dev yt-dlp path). */
+  path?: string;
+  /** Set when the audio arrived over HTTP from the worker. */
+  bytes?: Buffer;
   cleanup: () => Promise<void>;
 }
 
@@ -47,7 +58,11 @@ export type YouTubeToolErrorCode =
   | "VALIDATION"
   | "DURATION_TOO_LONG"
   | "DOWNLOAD_FAILED"
-  | "INSPECTION_FAILED";
+  | "INSPECTION_FAILED"
+  /** YouTube refused the worker's IP ("Sign in to confirm you're not a bot"). */
+  | "BOT_CHECK"
+  /** The worker is unreachable, misconfigured, or returned a non-YouTube error. */
+  | "WORKER_UNAVAILABLE";
 
 export class YouTubeToolError extends Error {
   constructor(
@@ -58,4 +73,18 @@ export class YouTubeToolError extends Error {
     super(message);
     this.name = "YouTubeToolError";
   }
+}
+
+const HTTP_STATUS_BY_CODE: Record<YouTubeToolErrorCode, number> = {
+  VALIDATION: 400,
+  DURATION_TOO_LONG: 422,
+  MISSING_DEPENDENCY: 503,
+  WORKER_UNAVAILABLE: 503,
+  BOT_CHECK: 502,
+  DOWNLOAD_FAILED: 502,
+  INSPECTION_FAILED: 502,
+};
+
+export function httpStatusForYouTubeError(err: YouTubeToolError): number {
+  return HTTP_STATUS_BY_CODE[err.code] ?? 502;
 }

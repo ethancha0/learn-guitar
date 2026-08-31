@@ -2,16 +2,20 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ensureToolCommand } from "./binaries";
+import ffprobePath from "@derhuerst/ffprobe-static";
+import ffmpegPath from "ffmpeg-static";
+import youtubeDl from "youtube-dl-exec";
 import {
   type MediaMetadata,
   type PreparedAlignmentAudio,
   YouTubeToolError,
 } from "./types";
 
-export { resolveToolCommand } from "./binaries";
-
 const YOUTUBE_ID_RE = /^[A-Za-z0-9_-]{11}$/;
+
+const bundledYtDlpPath = (youtubeDl as unknown as {
+  constants?: { YOUTUBE_DL_PATH?: string };
+}).constants?.YOUTUBE_DL_PATH;
 
 interface ProcessResult {
   code: number;
@@ -113,6 +117,19 @@ export function contentTypeForExtension(extension: string): string {
   }
 }
 
+function resolveToolCommand(command: string): string {
+  switch (command) {
+    case "yt-dlp":
+      return process.env.YT_DLP_PATH || process.env.YOUTUBE_DL_PATH || bundledYtDlpPath || command;
+    case "ffmpeg":
+      return process.env.FFMPEG_PATH || process.env.FFMPEG_BIN || ffmpegPath || command;
+    case "ffprobe":
+      return process.env.FFPROBE_PATH || process.env.FFPROBE_BIN || ffprobePath || command;
+    default:
+      return command;
+  }
+}
+
 export function safeFileName(value: string): string {
   return (
     value
@@ -125,13 +142,13 @@ export function safeFileName(value: string): string {
   );
 }
 
-export async function runTool(
+export function runTool(
   command: string,
   args: string[],
   options: { timeoutMs?: number; cwd?: string } = {},
 ): Promise<ProcessResult> {
   const timeoutMs = options.timeoutMs ?? 120_000;
-  const resolvedCommand = await ensureToolCommand(command);
+  const resolvedCommand = resolveToolCommand(command);
 
   return new Promise((resolve, reject) => {
     const child = spawn(resolvedCommand, args, {
@@ -164,7 +181,7 @@ export async function runTool(
         reject(
           new YouTubeToolError(
             "MISSING_DEPENDENCY",
-            `${command} is not installed, bundled, or available on PATH (${resolvedCommand}).`,
+            `${command} is not installed, bundled, or available on PATH.`,
           ),
         );
         return;

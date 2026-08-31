@@ -1,22 +1,18 @@
 import { NextResponse } from "next/server";
 import { searchYouTube } from "@/lib/youtube/search";
-import { YouTubeToolError } from "@/lib/youtube/types";
+import {
+  httpStatusForYouTubeError,
+  YouTubeToolError,
+} from "@/lib/youtube/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
 
 function errorResponse(err: unknown) {
   if (err instanceof YouTubeToolError) {
-    const status =
-      err.code === "MISSING_DEPENDENCY"
-        ? 503
-        : err.code === "VALIDATION"
-          ? 400
-          : 502;
     return NextResponse.json(
-      { error: err.message, details: err.details },
-      { status },
+      { error: err.message, code: err.code, details: err.details },
+      { status: httpStatusForYouTubeError(err) },
     );
   }
 
