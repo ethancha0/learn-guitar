@@ -53,7 +53,8 @@ Alignment / align/
   `public/alphatab` for worker/worklet compatibility.
 - **Media import:** Node.js route handlers wrap `yt-dlp`, `ffmpeg`, and
   `ffprobe` for YouTube search, download, validation, duration checks, and audio
-  normalization.
+  normalization. Deployment uses npm-bundled binaries, with env-var overrides
+  available for custom hosts.
 - **Tab import:** Songsterr lookup/download helpers resolve current revisions
   and convert fetched parts into Guitar Pro data for alphaTab.
 - **Persistence:** IndexedDB for large local audio Blobs, localStorage for small
@@ -73,10 +74,22 @@ npm run build    # production build + type check
 npm test         # Vitest
 ```
 
-For YouTube import and alignment audio preparation on macOS:
+For YouTube import and alignment audio preparation on macOS, Homebrew binaries
+work locally:
 
 ```bash
 brew install yt-dlp ffmpeg
+```
+
+Deployment does not need Homebrew. The app includes `youtube-dl-exec`,
+`ffmpeg-static`, and `@derhuerst/ffprobe-static`, and `next.config.mjs` traces
+those files into the media API routes. If your host provides its own binaries,
+override them with:
+
+```bash
+YT_DLP_PATH=/absolute/path/to/yt-dlp
+FFMPEG_PATH=/absolute/path/to/ffmpeg
+FFPROBE_PATH=/absolute/path/to/ffprobe
 ```
 
 For account-backed imports, create `.env.local`:

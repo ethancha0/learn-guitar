@@ -7,6 +7,17 @@ const nextConfig = {
   turbopack: {
     root: fileURLToPath(new URL(".", import.meta.url)),
   },
+  outputFileTracingIncludes: {
+    "/api/youtube/*": [
+      "./node_modules/youtube-dl-exec/bin/**/*",
+      "./node_modules/ffmpeg-static/ffmpeg*",
+      "./node_modules/@derhuerst/ffprobe-static/ffprobe*",
+    ],
+    "/api/align": [
+      "./node_modules/ffmpeg-static/ffmpeg*",
+      "./node_modules/@derhuerst/ffprobe-static/ffprobe*",
+    ],
+  },
 };
 
 export default nextConfig;
