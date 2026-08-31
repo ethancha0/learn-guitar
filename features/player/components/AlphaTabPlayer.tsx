@@ -87,6 +87,13 @@ const PERSIST_DEBOUNCE_MS = 400;
  * readable at arm's length — see the Songsterr mobile layout.
  */
 const MOBILE_NOTATION_SCALE = 1.35;
+/**
+ * alphaTab's Gourlay spacing springs are tuned for a wide sheet, so on a phone
+ * a bar of eighth notes stretches across the whole width and a system holds one
+ * bar. Weakening the springs packs the notes tighter *without* shrinking the
+ * glyphs, which is how Songsterr fits two bars per row at a comparable size.
+ */
+const MOBILE_STRETCH_FORCE = 0.55;
 
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -174,7 +181,7 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   const isMobile = useIsMobile();
   // What the renderer is currently configured with, so screen-size changes
   // don't trigger a re-render of the whole sheet on every unrelated state pass.
-  const appliedDisplayRef = useRef({ tabOnly: false, scale: 1 });
+  const appliedDisplayRef = useRef({ tabOnly: false, scale: 1, stretch: 1 });
 
   // Recording + calibration state
   const [mixerOpen, setMixerOpen] = useState(false);
@@ -372,7 +379,11 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
           },
         });
         apiRef.current = api;
-        appliedDisplayRef.current = { tabOnly: getTabOnly(), scale: 1 };
+        appliedDisplayRef.current = {
+          tabOnly: getTabOnly(),
+          scale: 1,
+          stretch: 1,
+        };
         if (process.env.NODE_ENV !== "production") {
           // Debug handle for manual sync inspection in the browser console.
           (window as unknown as { __alphaTabApi?: unknown }).__alphaTabApi = api;
@@ -452,18 +463,23 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   /** Push notation size + stave profile into alphaTab, re-rendering only on a
    *  real change (each render redraws the whole sheet). */
   const applyDisplay = useCallback(
-    (next: { tabOnly: boolean; scale: number }) => {
+    (next: { tabOnly: boolean; scale: number; stretch: number }) => {
       const api = apiRef.current;
       const alphaTab = alphaTabRef.current;
       if (!api || !alphaTab) return;
       const applied = appliedDisplayRef.current;
-      if (applied.tabOnly === next.tabOnly && applied.scale === next.scale)
+      if (
+        applied.tabOnly === next.tabOnly &&
+        applied.scale === next.scale &&
+        applied.stretch === next.stretch
+      )
         return;
       appliedDisplayRef.current = next;
       api.settings.display.staveProfile = next.tabOnly
         ? alphaTab.StaveProfile.Tab
         : alphaTab.StaveProfile.Default;
       api.settings.display.scale = next.scale;
+      api.settings.display.stretchForce = next.stretch;
       api.updateSettings();
       api.render();
     },
@@ -480,6 +496,7 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     applyDisplay({
       tabOnly: nextTabOnly,
       scale: isMobile ? MOBILE_NOTATION_SCALE : 1,
+      stretch: isMobile ? MOBILE_STRETCH_FORCE : 1,
     });
   }, [isMobile, status, applyDisplay]);
 
@@ -487,7 +504,11 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     const next = !tabOnly;
     setTabOnlyState(next);
     setTabOnly(next);
-    applyDisplay({ tabOnly: next, scale: appliedDisplayRef.current.scale });
+    applyDisplay({
+      tabOnly: next,
+      scale: appliedDisplayRef.current.scale,
+      stretch: appliedDisplayRef.current.stretch,
+    });
   }
 
   // Load the imported mp3 backing track + persisted per-song settings.
