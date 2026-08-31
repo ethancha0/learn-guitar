@@ -210,11 +210,24 @@ export async function uploadSongToAccount({
   return persisted;
 }
 
-async function downloadStorageBlob(path: string): Promise<Blob> {
-  const supabase = createClient();
-  const { data, error } = await supabase.storage.from(BUCKET).download(path);
-  if (error) throw error;
-  return data;
+async function downloadAccountSongBlob(
+  songId: string,
+  kind: "tab" | "audio",
+): Promise<Blob> {
+  const response = await fetch(
+    `/api/songs/${encodeURIComponent(songId)}/${kind}`,
+    { cache: "no-store" },
+  );
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as {
+      error?: string;
+    } | null;
+    throw new Error(
+      body?.error ??
+        `Could not download ${kind} file for this account song (${response.status}).`,
+    );
+  }
+  return response.blob();
 }
 
 export async function hydrateSupabaseSong(songId: string): Promise<ImportedSong | null> {
@@ -224,8 +237,8 @@ export async function hydrateSupabaseSong(songId: string): Promise<ImportedSong 
 
   const song = toSong(data);
   const [tabBlob, audioBlob] = await Promise.all([
-    downloadStorageBlob(song.tabStoragePath!),
-    downloadStorageBlob(song.audioStoragePath!),
+    downloadAccountSongBlob(song.id, "tab"),
+    downloadAccountSongBlob(song.id, "audio"),
   ]);
   const tabBytes = new Uint8Array(await tabBlob.arrayBuffer());
   await putBackingAudio(song.id, audioBlob);
