@@ -214,9 +214,9 @@ export function ImportSongDialog() {
 
       addImportedSong(song);
 
-      // Deliberately not awaited: DTW takes tens of seconds to minutes, and the
-      // song is playable (on a linear offset map) the whole time. The player
-      // swaps in the real mapping when the job writes it.
+      // Deliberately not awaited: DTW takes tens of seconds to minutes. The
+      // player opens behind an alignment overlay and becomes playable when the
+      // job writes the real mapping.
       void queueAlignment({
         songId: id,
         gpBytes: tabBytes,

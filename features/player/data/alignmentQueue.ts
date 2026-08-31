@@ -81,6 +81,7 @@ export function queueAlignment(
   }
   if (!req.force && hasUsableMap(req.songId)) return Promise.resolve(null);
 
+  if (!req.force) patchAudioSync(req.songId, { dtwStatus: "pending" });
   setJob(req.songId, { state: "queued", message: "Alignment queued…" });
   const run = chain.then(() => align(req));
   // Keep the chain alive: one failed run must not cancel everything behind it.
@@ -108,6 +109,7 @@ async function align(req: AlignmentRequest): Promise<AlignmentJob> {
     });
 
     if (result.status === "failed" || result.points.length < 2) {
+      patchAudioSync(req.songId, { dtwStatus: "failed" });
       return setJob(req.songId, {
         state: "failed",
         message: result.message ?? "DTW alignment failed.",
@@ -126,7 +128,11 @@ async function align(req: AlignmentRequest): Promise<AlignmentJob> {
       createdAt: Date.now(),
     };
     // The map replaces the linear offset entirely, so clear the manual nudge.
-    patchAudioSync(req.songId, { syncMap: stored, offsetMs: 0 });
+    patchAudioSync(req.songId, {
+      syncMap: stored,
+      offsetMs: 0,
+      dtwStatus: "ready",
+    });
 
     return setJob(req.songId, {
       state: "done",
@@ -136,6 +142,7 @@ async function align(req: AlignmentRequest): Promise<AlignmentJob> {
           : `Aligned: ${result.points.length} points via ${result.method}.`,
     });
   } catch (err) {
+    patchAudioSync(req.songId, { dtwStatus: "failed" });
     return setJob(req.songId, {
       state: "failed",
       message: `DTW alignment error: ${(err as Error).message}`,

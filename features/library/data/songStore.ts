@@ -200,6 +200,11 @@ export interface AudioSyncSettings {
   offsetMs: number;
   /** Nonlinear score↔audio mapping (from DTW or manual anchors); preferred. */
   syncMap?: StoredSyncMap;
+  /**
+   * Import-time DTW readiness. New imports hold the player until this leaves
+   * `pending`; manual retries do not need to block an already usable song.
+   */
+  dtwStatus?: "pending" | "ready" | "failed";
   /** Persisted "original recording" channel state. */
   backingVol?: number;
   backingMuted?: boolean;

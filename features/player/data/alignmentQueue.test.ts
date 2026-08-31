@@ -78,6 +78,7 @@ describe("queueAlignment", () => {
     const { calls } = mockAlignEndpoint(OK_RESPONSE);
 
     const done = queue.queueAlignment(request("song"));
+    expect(songStore.getAudioSync("song")?.dtwStatus).toBe("pending");
     await vi.waitFor(() => expect(calls).toHaveLength(1));
     calls[0].release();
 
@@ -86,13 +87,14 @@ describe("queueAlignment", () => {
     expect(settings?.offsetMs).toBe(0);
     expect(settings?.syncMap?.points).toHaveLength(2);
     expect(settings?.syncMap?.method).toBe("dtw:mrmsdtw");
+    expect(settings?.dtwStatus).toBe("ready");
     // Durations come back from the aligner, which is the only party that knows
     // them for a song imported without ever opening the player.
     expect(settings?.syncMap?.scoreEndSec).toBe(100);
     expect(settings?.syncMap?.audioDurationSec).toBe(101);
   });
 
-  it("skips a song that already has a usable map unless forced", async () => {
+  it("skips a song that already has a usable map", async () => {
     const { queue, songStore } = await load();
     songStore.patchAudioSync("song", {
       offsetMs: 0,
@@ -107,6 +109,29 @@ describe("queueAlignment", () => {
 
     expect(await queue.queueAlignment(request("song"))).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not mark forced realignment as import-pending", async () => {
+    const { queue, songStore } = await load();
+    songStore.patchAudioSync("song", {
+      offsetMs: 0,
+      dtwStatus: "ready",
+      syncMap: {
+        points: OK_RESPONSE.points,
+        method: "dtw:mrmsdtw",
+        status: "ok",
+        createdAt: Date.now(),
+      },
+    });
+    const { calls } = mockAlignEndpoint(OK_RESPONSE);
+
+    const done = queue.queueAlignment({ ...request("song"), force: true });
+    expect(songStore.getAudioSync("song")?.dtwStatus).toBe("ready");
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    calls[0].release();
+
+    expect(await done).toMatchObject({ state: "done" });
+    expect(songStore.getAudioSync("song")?.dtwStatus).toBe("ready");
   });
 
   it("ignores a second request for a song already in flight", async () => {
@@ -155,6 +180,7 @@ describe("queueAlignment", () => {
     });
     expect(songStore.getAudioSync("song")?.offsetMs).toBe(120);
     expect(songStore.getAudioSync("song")?.syncMap).toBeUndefined();
+    expect(songStore.getAudioSync("song")?.dtwStatus).toBe("failed");
   });
 
   it("does nothing in production, where /api/align is disabled", async () => {

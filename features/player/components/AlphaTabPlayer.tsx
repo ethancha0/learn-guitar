@@ -7,7 +7,6 @@ import {
   Square,
   Repeat,
   Printer,
-  Loader2,
   SlidersHorizontal,
   Activity,
   Music,
@@ -129,6 +128,51 @@ function formatMs(ms: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+function LoadingScoreOverlay({
+  title,
+  detail,
+  error,
+}: {
+  title: string;
+  detail?: string;
+  error?: boolean;
+}) {
+  return (
+    <div
+      className="absolute inset-0 z-10 flex items-center justify-center overflow-hidden bg-[#111315] px-6 text-zinc-100"
+      role={error ? "alert" : "status"}
+      aria-live="polite"
+    >
+      <div className="sync-loading-grid" aria-hidden="true" />
+      <div className="relative flex w-full max-w-md flex-col items-center gap-5 text-center">
+        <div
+          className={cn(
+            "sync-loading-score",
+            error && "sync-loading-score-error",
+          )}
+          aria-hidden="true"
+        >
+          <div className="sync-loading-staff">
+            <span className="sync-loading-line" />
+            <span className="sync-loading-line" />
+            <span className="sync-loading-line" />
+            <span className="sync-loading-line" />
+            <span className="sync-loading-line" />
+            {!error && <span className="sync-loading-playhead" />}
+            {[0, 1, 2, 3, 4, 5].map((i) => (
+              <span key={i} className={`sync-loading-note note-${i + 1}`} />
+            ))}
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          <p className="text-sm font-medium text-zinc-100">{title}</p>
+          {detail && <p className="text-xs text-zinc-400">{detail}</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface AlphaTabPlayerProps {
   /** Song id, used to load the backing track and remember per-song settings. */
   songId: string;
@@ -191,6 +235,9 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   const [backingMuted, setBackingMuted] = useState(false);
   const [offsetMs, setOffsetMs] = useState(0);
   const [storedSyncMap, setStoredSyncMap] = useState<StoredSyncMap | null>(null);
+  const [dtwStatus, setDtwStatus] =
+    useState<AudioSyncSettings["dtwStatus"]>();
+  const [syncSettingsLoaded, setSyncSettingsLoaded] = useState(false);
   const [barTimeline, setBarTimeline] = useState<BarTimeline | null>(null);
 
   // Three candidate recording lengths, least trustworthy last. `<audio>.duration`
@@ -518,18 +565,26 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     let metaTimer: ReturnType<typeof setTimeout> | undefined;
     let cleanupAudio: (() => void) | undefined;
 
+    setSyncSettingsLoaded(false);
     const sync = getAudioSync(songId);
     const storedDurationKnown = (sync?.syncMap?.audioDurationSec ?? 0) > 0;
     if (sync) {
       setOffsetMs(sync.offsetMs ?? 0);
       setStoredSyncMap(sync.syncMap ?? null);
+      setDtwStatus(sync.dtwStatus);
       setStoredDurationSec(sync.syncMap?.audioDurationSec ?? 0);
       if (typeof sync.backingVol === "number") setBackingVol(sync.backingVol);
       if (typeof sync.backingMuted === "boolean")
         setBackingMuted(sync.backingMuted);
       if (typeof sync.synthVol === "number") setSynthVol(sync.synthVol);
       if (typeof sync.synthMuted === "boolean") setSynthMuted(sync.synthMuted);
+    } else {
+      setOffsetMs(0);
+      setStoredSyncMap(null);
+      setDtwStatus(undefined);
+      setStoredDurationSec(0);
     }
+    setSyncSettingsLoaded(true);
 
     getBackingAudio(songId).then((blob) => {
       if (cancelled) return;
@@ -607,6 +662,7 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
       const sync = getAudioSync(songId);
       setOffsetMs(sync?.offsetMs ?? 0);
       setStoredSyncMap(sync?.syncMap ?? null);
+      setDtwStatus(sync?.dtwStatus);
       setStoredDurationSec(sync?.syncMap?.audioDurationSec ?? 0);
     };
     const onStorage = (e: StorageEvent) => {
@@ -807,13 +863,21 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     };
   }, []);
 
+  const waitingForImportAlignment = dtwStatus === "pending";
+  const controlsDisabled =
+    !playerReady ||
+    !audioMetaReady ||
+    !syncSettingsLoaded ||
+    waitingForImportAlignment;
+
   const togglePlay = useCallback(() => {
+    if (controlsDisabled) return;
     // Resume the synth's AudioContext on the click itself. Chrome starts it
     // suspended, and the path click → alphaTab → <audio> play event is too many
     // async hops to reliably keep the user-activation that `resume()` needs.
     synthRef.current?.resume();
     apiRef.current?.playPause();
-  }, []);
+  }, [controlsDisabled]);
 
   const stop = useCallback(() => {
     apiRef.current?.stop();
@@ -957,8 +1021,6 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     });
   }
 
-  const controlsDisabled = !playerReady || !audioMetaReady;
-
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (controlsDisabled || isEditableTarget(e.target)) return;
@@ -992,13 +1054,25 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   }, [controlsDisabled, togglePlay, stop, adjustSpeed]);
 
   const overlayVisible =
-    status === "error" || status !== "ready" || !audioMetaReady;
+    status === "error" ||
+    status !== "ready" ||
+    !audioMetaReady ||
+    !syncSettingsLoaded ||
+    waitingForImportAlignment;
   const overlayText =
     status === "error"
       ? "Could not render this tab file."
       : status !== "ready"
         ? "Rendering tab…"
-        : "Loading recording…";
+        : !audioMetaReady || !syncSettingsLoaded
+          ? "Loading recording…"
+          : "Aligning tab to recording…";
+  const overlayDetail =
+    status === "error"
+      ? "Try importing the tab again."
+      : waitingForImportAlignment
+        ? "Preparing synced playback."
+        : undefined;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2 md:gap-3">
@@ -1234,12 +1308,16 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
         className="relative order-1 min-h-[16rem] flex-1 overflow-auto overscroll-contain rounded-lg border border-white/5 bg-white text-black md:order-none md:min-h-[360px]"
       >
         {overlayVisible && (
-          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-surface-raised text-sm text-zinc-400">
-            {status !== "error" && <Loader2 className="h-6 w-6 animate-spin" />}
-            <p>{overlayText}</p>
-          </div>
+          <LoadingScoreOverlay
+            title={overlayText}
+            detail={overlayDetail}
+            error={status === "error"}
+          />
         )}
-        <div ref={hostRef} className="alphatab-host p-1 md:p-4" />
+        <div
+          ref={hostRef}
+          className={cn("alphatab-host p-1 md:p-4", overlayVisible && "invisible")}
+        />
       </div>
 
       {mixerOpen && (
