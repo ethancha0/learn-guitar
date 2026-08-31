@@ -25,21 +25,38 @@ export default function PlayerPage({
   const [hydrated, setHydrated] = useState(false);
   const [checkingAccount, setCheckingAccount] = useState(false);
   const [accountChecked, setAccountChecked] = useState(false);
+  const [accountLoadError, setAccountLoadError] = useState<string | null>(null);
 
   useEffect(() => setHydrated(true), []);
+
+  useEffect(() => {
+    setAccountChecked(false);
+    setAccountLoadError(null);
+  }, [songId]);
 
   useEffect(() => {
     if (!hydrated || song?.tabData || checkingAccount || accountChecked) return;
 
     let cancelled = false;
     setCheckingAccount(true);
+    setAccountLoadError(null);
     hydrateSupabaseSong(songId)
       .then((remoteSong) => {
-        if (!cancelled && remoteSong) addImportedSong(remoteSong);
+        if (cancelled) return;
+        if (remoteSong) {
+          addImportedSong(remoteSong);
+        } else {
+          setAccountLoadError("That song was not found in your account.");
+        }
       })
-      .catch((err) =>
-        console.error("[PlayerPage] could not hydrate account song", err),
-      )
+      .catch((err) => {
+        console.error("[PlayerPage] could not hydrate account song", err);
+        setAccountLoadError(
+          err instanceof Error
+            ? err.message
+            : "Could not download this song from your account.",
+        );
+      })
       .finally(() => {
         if (!cancelled) {
           setCheckingAccount(false);
@@ -69,6 +86,9 @@ export default function PlayerPage({
         </div>
       );
     }
+    if (accountLoadError) {
+      return <AccountSongError message={accountLoadError} />;
+    }
     notFound();
   }
 
@@ -94,6 +114,8 @@ export default function PlayerPage({
 
       {song.tabData ? (
         <AlphaTabPlayer songId={songId} tabData={song.tabData} />
+      ) : accountLoadError ? (
+        <AccountSongError message={accountLoadError} />
       ) : song.persisted && (checkingAccount || !accountChecked) ? (
         <div className="flex flex-1 items-center justify-center text-sm text-zinc-500">
           Loading account song…
@@ -108,6 +130,25 @@ export default function PlayerPage({
       {/* Mock scoring readout — not worth phone screen space yet. */}
       <div className="hidden md:block">
         <FeedbackPanel grade={mockGrade} />
+      </div>
+    </div>
+  );
+}
+
+function AccountSongError({ message }: { message: string }) {
+  return (
+    <div className="flex flex-1 items-center justify-center px-4 text-center">
+      <div className="max-w-md rounded-lg border border-red-500/20 bg-red-500/5 p-5">
+        <p className="text-sm font-medium text-red-100">
+          Could not load account song
+        </p>
+        <p className="mt-2 text-sm text-red-200/80">{message}</p>
+        <Link
+          href="/library"
+          className="mt-4 inline-flex text-sm text-accent hover:text-accent-muted"
+        >
+          Back to library
+        </Link>
       </div>
     </div>
   );

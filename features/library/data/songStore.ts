@@ -122,7 +122,12 @@ export function useAllSongs(): Song[] {
 
 export function useSongById(id: string): Song | undefined {
   const imported = useImportedSongs();
-  return imported.find((s) => s.id === id) ?? getSeedSongById(id);
+  const remote = useSupabaseSongs();
+  return (
+    imported.find((s) => s.id === id) ??
+    remote.find((s) => s.id === id) ??
+    getSeedSongById(id)
+  );
 }
 
 // --- Preferred instrument (per song) -----------------------------------------

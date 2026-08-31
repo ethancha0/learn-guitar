@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { resolveToolCommand, validateYouTubeVideoIdOrUrl } from "./metadata";
+import { collectVideoRenderers, parseLengthText, textFrom } from "./innertube";
+import { validateYouTubeVideoIdOrUrl } from "./metadata";
 import { YouTubeToolError } from "./types";
-import { existsSync } from "node:fs";
 
 describe("validateYouTubeVideoIdOrUrl", () => {
   it("accepts bare video IDs", () => {
@@ -38,11 +38,26 @@ describe("validateYouTubeVideoIdOrUrl", () => {
   });
 });
 
-describe("resolveToolCommand", () => {
-  it("uses the npm-bundled yt-dlp instead of a PATH fallback", () => {
-    const resolved = resolveToolCommand("yt-dlp");
-    expect(resolved).not.toBe("yt-dlp");
-    expect(resolved).toMatch(/yt-dlp(\.exe)?$/);
-    expect(existsSync(resolved)).toBe(true);
+describe("innertube helpers", () => {
+  it("parses length strings", () => {
+    expect(parseLengthText("3:45")).toBe(225);
+    expect(parseLengthText("1:02:03")).toBe(3723);
+    expect(parseLengthText("")).toBe(0);
+  });
+
+  it("reads title runs and walks videoRenderer nodes", () => {
+    expect(textFrom({ runs: [{ text: "Hello" }, { text: " World" }] })).toBe(
+      "Hello World",
+    );
+    const videos = collectVideoRenderers({
+      contents: [
+        { videoRenderer: { videoId: "dQw4w9WgXcQ", title: { simpleText: "A" } } },
+        { item: { videoRenderer: { videoId: "xxxxxxxxxxx", title: { simpleText: "B" } } } },
+      ],
+    });
+    expect(videos.map((video) => video.videoId)).toEqual([
+      "dQw4w9WgXcQ",
+      "xxxxxxxxxxx",
+    ]);
   });
 });

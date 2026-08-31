@@ -1,45 +1,17 @@
 import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import ffprobePath from "@derhuerst/ffprobe-static";
-import ffmpegPath from "ffmpeg-static";
+import { ensureToolCommand } from "./binaries";
 import {
   type MediaMetadata,
   type PreparedAlignmentAudio,
   YouTubeToolError,
 } from "./types";
 
+export { resolveToolCommand } from "./binaries";
+
 const YOUTUBE_ID_RE = /^[A-Za-z0-9_-]{11}$/;
-const requireFromHere = createRequire(import.meta.url);
-
-/**
- * Next's production bundle drops extra CJS properties on `youtube-dl-exec`'s
- * default export, so `constants.YOUTUBE_DL_PATH` is undefined on the deployed
- * server. Resolve binaries from the installed package at runtime instead.
- */
-function packageFile(pkg: string, ...relativePath: string[]): string | undefined {
-  try {
-    const candidate = path.join(
-      path.dirname(requireFromHere.resolve(`${pkg}/package.json`)),
-      ...relativePath,
-    );
-    return existsSync(candidate) ? candidate : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function firstExisting(...candidates: Array<string | undefined | null>): string | undefined {
-  return candidates.find((value): value is string => Boolean(value && existsSync(value)));
-}
-
-function bundledYtDlpPath(): string | undefined {
-  const file = process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
-  return packageFile("youtube-dl-exec", "bin", file);
-}
 
 interface ProcessResult {
   code: number;
@@ -141,45 +113,6 @@ export function contentTypeForExtension(extension: string): string {
   }
 }
 
-export function resolveToolCommand(command: string): string {
-  switch (command) {
-    case "yt-dlp":
-      return (
-        firstExisting(
-          process.env.YT_DLP_PATH,
-          process.env.YOUTUBE_DL_PATH,
-          bundledYtDlpPath(),
-        ) ?? command
-      );
-    case "ffmpeg":
-      return (
-        firstExisting(
-          process.env.FFMPEG_PATH,
-          process.env.FFMPEG_BIN,
-          ffmpegPath,
-          packageFile(
-            "ffmpeg-static",
-            process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg",
-          ),
-        ) ?? command
-      );
-    case "ffprobe":
-      return (
-        firstExisting(
-          process.env.FFPROBE_PATH,
-          process.env.FFPROBE_BIN,
-          ffprobePath,
-          packageFile(
-            "@derhuerst/ffprobe-static",
-            process.platform === "win32" ? "ffprobe.exe" : "ffprobe",
-          ),
-        ) ?? command
-      );
-    default:
-      return command;
-  }
-}
-
 export function safeFileName(value: string): string {
   return (
     value
@@ -192,13 +125,13 @@ export function safeFileName(value: string): string {
   );
 }
 
-export function runTool(
+export async function runTool(
   command: string,
   args: string[],
   options: { timeoutMs?: number; cwd?: string } = {},
 ): Promise<ProcessResult> {
   const timeoutMs = options.timeoutMs ?? 120_000;
-  const resolvedCommand = resolveToolCommand(command);
+  const resolvedCommand = await ensureToolCommand(command);
 
   return new Promise((resolve, reject) => {
     const child = spawn(resolvedCommand, args, {

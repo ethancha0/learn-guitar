@@ -1,9 +1,10 @@
 import {
   safeFileName,
-  validateYouTubeVideoIdOrUrl,
   youtubeWatchUrl,
   runTool,
 } from "./metadata";
+import { hasLocalYtDlp } from "./binaries";
+import { searchYouTubeInnertube } from "./innertube";
 import {
   type YouTubeSearchResult,
   YouTubeToolError,
@@ -52,7 +53,8 @@ function toResult(entry: YtDlpSearchEntry): YouTubeSearchResult | null {
   if (!entry.id || !entry.title) return null;
   let videoId: string;
   try {
-    videoId = validateYouTubeVideoIdOrUrl(entry.id);
+    videoId = entry.id;
+    if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) return null;
   } catch {
     return null;
   }
@@ -71,23 +73,11 @@ function toResult(entry: YtDlpSearchEntry): YouTubeSearchResult | null {
   };
 }
 
-export async function searchYouTube(
+async function searchWithYtDlp(
   query: string,
-  options: { maxResults?: number; maxDurationSec?: number } = {},
+  maxResults: number,
+  maxDurationSec: number,
 ): Promise<YouTubeSearchResult[]> {
-  const q = query.trim();
-  if (!q) {
-    throw new YouTubeToolError("VALIDATION", "Search query is required.");
-  }
-  if (q.length > 200) {
-    throw new YouTubeToolError(
-      "VALIDATION",
-      "Search query must be 200 characters or fewer.",
-    );
-  }
-
-  const maxResults = Math.min(Math.max(options.maxResults ?? 8, 1), 20);
-  const maxDurationSec = options.maxDurationSec ?? YOUTUBE_MAX_DURATION_SEC;
   const result = await runTool(
     "yt-dlp",
     [
@@ -95,7 +85,7 @@ export async function searchYouTube(
       "--skip-download",
       "--no-warnings",
       "--ignore-no-formats-error",
-      `ytsearch${maxResults}:${q}`,
+      `ytsearch${maxResults}:${query}`,
     ],
     { timeoutMs: 90_000 },
   );
@@ -128,4 +118,39 @@ export async function searchYouTube(
       ...entry,
       title: entry.title || safeFileName(entry.videoId),
     }));
+}
+
+export async function searchYouTube(
+  query: string,
+  options: { maxResults?: number; maxDurationSec?: number } = {},
+): Promise<YouTubeSearchResult[]> {
+  const q = query.trim();
+  if (!q) {
+    throw new YouTubeToolError("VALIDATION", "Search query is required.");
+  }
+  if (q.length > 200) {
+    throw new YouTubeToolError(
+      "VALIDATION",
+      "Search query must be 200 characters or fewer.",
+    );
+  }
+
+  const maxResults = Math.min(Math.max(options.maxResults ?? 8, 1), 20);
+  const maxDurationSec = options.maxDurationSec ?? YOUTUBE_MAX_DURATION_SEC;
+
+  try {
+    const results = await searchYouTubeInnertube(q, { maxResults, maxDurationSec });
+    if (results.length > 0) return results;
+  } catch (err) {
+    if (!hasLocalYtDlp()) throw err;
+  }
+
+  if (!hasLocalYtDlp()) {
+    throw new YouTubeToolError(
+      "DOWNLOAD_FAILED",
+      "YouTube search returned no results.",
+    );
+  }
+
+  return searchWithYtDlp(q, maxResults, maxDurationSec);
 }
