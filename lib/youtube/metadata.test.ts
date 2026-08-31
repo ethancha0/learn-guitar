@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { validateYouTubeVideoIdOrUrl } from "./metadata";
+import { resolveToolCommand, validateYouTubeVideoIdOrUrl } from "./metadata";
 import { YouTubeToolError } from "./types";
+import { existsSync } from "node:fs";
 
 describe("validateYouTubeVideoIdOrUrl", () => {
   it("accepts bare video IDs", () => {
@@ -34,5 +35,14 @@ describe("validateYouTubeVideoIdOrUrl", () => {
     expect(() =>
       validateYouTubeVideoIdOrUrl("https://example.com/watch?v=dQw4w9WgXcQ"),
     ).toThrow("Only YouTube video URLs are supported.");
+  });
+});
+
+describe("resolveToolCommand", () => {
+  it("uses the npm-bundled yt-dlp instead of a PATH fallback", () => {
+    const resolved = resolveToolCommand("yt-dlp");
+    expect(resolved).not.toBe("yt-dlp");
+    expect(resolved).toMatch(/yt-dlp(\.exe)?$/);
+    expect(existsSync(resolved)).toBe(true);
   });
 });
