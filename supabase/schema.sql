@@ -13,8 +13,12 @@ create table if not exists public.songs (
   audio_path text not null,
   tab_file_name text not null,
   audio_file_names text[] not null default '{}',
+  youtube_source jsonb,
   created_at timestamptz not null default now()
 );
+
+alter table public.songs
+  add column if not exists youtube_source jsonb;
 
 alter table public.songs enable row level security;
 

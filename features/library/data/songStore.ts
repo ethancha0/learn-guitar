@@ -4,15 +4,18 @@ import { useSyncExternalStore } from "react";
 import type { Song } from "../types/song";
 import { songs as seedSongs, getSongById as getSeedSongById } from "./songs";
 import { useSupabaseSongs } from "./supabaseSongStore";
+import type { YouTubeSearchResult } from "@/lib/youtube/types";
 
 /**
- * Client-side store for user-imported songs. The seed list in `songs.ts` stays
- * read-only; anything the user imports through the "Import song" dialog is kept
- * here and persisted to localStorage so the player route can resolve it.
+ * Client-side view of user-imported songs. Account-backed imports are cached in
+ * memory for the current session and stored in Supabase; localStorage is only
+ * the fallback store for songs that have not been persisted to an account.
  */
 
 const STORAGE_KEY = "learn-bass.imported-songs";
 const EVENT = "learn-bass:songs-changed";
+let sessionSongs: ImportedSong[] = [];
+let sessionVersion = 0;
 
 export interface ImportedSong extends Song {
   /** Epoch ms the song was imported. */
@@ -23,6 +26,8 @@ export interface ImportedSong extends Song {
   /** Supabase storage paths for account-backed imports. */
   tabStoragePath?: string;
   audioStoragePath?: string;
+  /** Optional YouTube result the user paired with the imported tab/audio. */
+  youtubeSource?: YouTubeSearchResult;
   /** True when this song is known to exist in the signed-in user's account. */
   persisted?: boolean;
 }
@@ -39,17 +44,23 @@ function read(): ImportedSong[] {
   }
 }
 
-function write(next: ImportedSong[]): void {
+function writeLocal(next: ImportedSong[]): void {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   window.dispatchEvent(new Event(EVENT));
 }
 
 export function addImportedSong(song: ImportedSong): void {
-  write([song, ...read().filter((s) => s.id !== song.id)]);
+  sessionSongs = [song, ...sessionSongs.filter((s) => s.id !== song.id)];
+  sessionVersion += 1;
+  if (song.persisted) {
+    window.dispatchEvent(new Event(EVENT));
+    return;
+  }
+  writeLocal([song, ...read().filter((s) => s.id !== song.id)]);
 }
 
 export function hasImportedSong(id: string): boolean {
-  return read().some((s) => s.id === id);
+  return sessionSongs.some((s) => s.id === id) || read().some((s) => s.id === id);
 }
 
 // --- React binding -------------------------------------------------------------
@@ -63,9 +74,13 @@ function getImportedSnapshot(): ImportedSong[] {
     typeof window === "undefined"
       ? "[]"
       : window.localStorage.getItem(STORAGE_KEY) ?? "[]";
-  if (raw !== cacheKey) {
-    cacheKey = raw;
-    cache = read();
+  const sessionKey = `${sessionVersion}:${sessionSongs.map((s) => s.id).join("|")}`;
+  const nextKey = `${raw}|${sessionKey}`;
+  if (nextKey !== cacheKey) {
+    cacheKey = nextKey;
+    const local = read();
+    const seen = new Set(sessionSongs.map((s) => s.id));
+    cache = [...sessionSongs, ...local.filter((s) => !seen.has(s.id))];
   }
   return cache;
 }

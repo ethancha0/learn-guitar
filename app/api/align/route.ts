@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { NextResponse } from "next/server";
+import { prepareAudioForAlignment } from "@/lib/youtube/metadata";
 
 /**
  * Dev-only offline alignment endpoint.
@@ -79,12 +80,14 @@ export async function POST(request: Request) {
 
   const dir = await mkdtemp(path.join(tmpdir(), "align-"));
   const gpPath = path.join(dir, "score.gp");
-  const audioPath = path.join(dir, "recording.audio");
   const syncPath = path.join(dir, "sync.json");
 
   try {
     await writeFile(gpPath, Buffer.from(await gp.arrayBuffer()));
-    await writeFile(audioPath, Buffer.from(await audio.arrayBuffer()));
+    const preparedAudio = await prepareAudioForAlignment(audio, {
+      workDir: dir,
+      inputName: "recording.input",
+    });
 
     const gpToMidi = await run("node", ["align/gp-to-midi.mjs", gpPath, dir]);
     if (gpToMidi.code !== 0) {
@@ -101,7 +104,7 @@ export async function POST(request: Request) {
     const args = [
       "align/align.py",
       "--recording",
-      audioPath,
+      preparedAudio.wavPath,
       "--midi",
       path.join(dir, "score.mid"),
       "--bars",
@@ -136,7 +139,7 @@ export async function POST(request: Request) {
         { status: 500 },
       );
     }
-    return NextResponse.json(doc);
+    return NextResponse.json(withAudioDiagnostics(doc, preparedAudio));
   } catch (err) {
     return NextResponse.json(
       { status: "failed", message: (err as Error).message },
@@ -160,4 +163,22 @@ function parseMessage(stdout: string, stderr: string): string | undefined {
     }
   }
   return stderr.trim().split("\n").slice(-3).join(" ") || undefined;
+}
+
+function withAudioDiagnostics(
+  doc: unknown,
+  audio: Awaited<ReturnType<typeof prepareAudioForAlignment>>,
+): unknown {
+  if (!doc || typeof doc !== "object") return doc;
+  const current = doc as {
+    diagnostics?: Record<string, unknown>;
+  };
+  return {
+    ...current,
+    diagnostics: {
+      ...current.diagnostics,
+      sourceAudio: audio.source,
+      alignmentAudio: audio.wav,
+    },
+  };
 }

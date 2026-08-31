@@ -53,8 +53,8 @@ export default function PlayerPage({
   }, [accountChecked, checkingAccount, hydrated, song?.tabData, songId]);
 
   if (!song) {
-    // Imported songs live in localStorage, so wait for hydration before
-    // deciding a song truly doesn't exist.
+    // Account songs are hydrated after mount, so wait before deciding a song
+    // truly doesn't exist.
     if (!hydrated) {
       return (
         <div className="flex flex-1 items-center justify-center text-sm text-zinc-500">

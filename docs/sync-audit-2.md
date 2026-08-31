@@ -3,6 +3,10 @@
 _Follow-up to [`sync-audit.md`](./sync-audit.md). Focus: is the GP+MP3 sync
 predictable, inspectable, and accurate across the **whole** song?_
 
+> **Round 3:** the beat-level sync points introduced here turned out to trigger
+> a millisecond truncation inside alphaTab, worth −2.67 ms/s. See
+> [`sync-audit-3.md`](./sync-audit-3.md).
+
 ---
 
 ## 1. How the system actually worked

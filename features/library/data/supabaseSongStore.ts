@@ -5,6 +5,7 @@ import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { putBackingAudio } from "@/features/player/data/audioStore";
 import { bytesToBase64 } from "./tabFile";
 import type { ImportedSong } from "./songStore";
+import type { YouTubeSearchResult } from "@/lib/youtube/types";
 
 const BUCKET = "song-files";
 export const SUPABASE_SONGS_EVENT = "learn-bass:supabase-songs-changed";
@@ -22,8 +23,24 @@ interface SongRow {
   audio_path: string;
   tab_file_name: string;
   audio_file_names: string[];
+  youtube_source: YouTubeSearchResult | null;
   created_at: string;
 }
+
+type SongInsert = {
+  id: string;
+  user_id: string;
+  title: string;
+  artist: string;
+  duration_sec: number;
+  bpm: number;
+  difficulty: Difficulty;
+  tab_path: string;
+  audio_path: string;
+  tab_file_name: string;
+  audio_file_names: string[];
+  youtube_source?: YouTubeSearchResult | null;
+};
 
 function toSong(row: SongRow): ImportedSong {
   return {
@@ -38,6 +55,7 @@ function toSong(row: SongRow): ImportedSong {
     createdAt: new Date(row.created_at).getTime(),
     tabFileName: row.tab_file_name,
     audioFileNames: row.audio_file_names ?? [],
+    youtubeSource: row.youtube_source ?? undefined,
     tabStoragePath: row.tab_path,
     audioStoragePath: row.audio_path,
     persisted: true,
@@ -58,6 +76,74 @@ function requireConfigured() {
   if (!isSupabaseConfigured()) {
     throw new Error("Supabase is not configured.");
   }
+}
+
+function isMissingYoutubeSourceColumn(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const maybeError = error as { code?: string; message?: string };
+  return (
+    maybeError.code === "PGRST204" ||
+    maybeError.message?.toLowerCase().includes("youtube_source") === true
+  );
+}
+
+async function insertSongRow(row: SongInsert): Promise<void> {
+  const supabase = createClient();
+  const { error } = await supabase.from("songs").insert(row);
+  if (!error) return;
+
+  if (row.youtube_source !== undefined && isMissingYoutubeSourceColumn(error)) {
+    const { youtube_source: _youtubeSource, ...legacyRow } = row;
+    const retry = await supabase.from("songs").insert(legacyRow);
+    if (!retry.error) return;
+    throw retry.error;
+  }
+
+  throw error;
+}
+
+async function selectSongRows() {
+  const supabase = createClient();
+  const query =
+    "id,title,artist,duration_sec,bpm,difficulty,tab_path,audio_path,tab_file_name,audio_file_names,youtube_source,created_at";
+  const fallbackQuery =
+    "id,title,artist,duration_sec,bpm,difficulty,tab_path,audio_path,tab_file_name,audio_file_names,created_at";
+
+  const result = await supabase
+    .from("songs")
+    .select(query)
+    .order("created_at", { ascending: false })
+    .returns<SongRow[]>();
+
+  if (!result.error || !isMissingYoutubeSourceColumn(result.error)) return result;
+
+  return supabase
+    .from("songs")
+    .select(fallbackQuery)
+    .order("created_at", { ascending: false })
+    .returns<SongRow[]>();
+}
+
+async function selectSongRow(songId: string) {
+  const supabase = createClient();
+  const query =
+    "id,title,artist,duration_sec,bpm,difficulty,tab_path,audio_path,tab_file_name,audio_file_names,youtube_source,created_at";
+  const fallbackQuery =
+    "id,title,artist,duration_sec,bpm,difficulty,tab_path,audio_path,tab_file_name,audio_file_names,created_at";
+
+  const result = await supabase
+    .from("songs")
+    .select(query)
+    .eq("id", songId)
+    .single<SongRow>();
+
+  if (!result.error || !isMissingYoutubeSourceColumn(result.error)) return result;
+
+  return supabase
+    .from("songs")
+    .select(fallbackQuery)
+    .eq("id", songId)
+    .single<SongRow>();
 }
 
 export function dispatchSupabaseSongsChanged(): void {
@@ -99,7 +185,7 @@ export async function uploadSongToAccount({
   if (tabUpload.error) throw tabUpload.error;
   if (audioUpload.error) throw audioUpload.error;
 
-  const { error } = await supabase.from("songs").insert({
+  await insertSongRow({
     id: song.id,
     user_id: user.id,
     title: song.title,
@@ -111,8 +197,8 @@ export async function uploadSongToAccount({
     audio_path: audioPath,
     tab_file_name: song.tabFileName,
     audio_file_names: song.audioFileNames,
+    youtube_source: song.youtubeSource ?? null,
   });
-  if (error) throw error;
 
   const persisted = {
     ...song,
@@ -133,14 +219,7 @@ async function downloadStorageBlob(path: string): Promise<Blob> {
 
 export async function hydrateSupabaseSong(songId: string): Promise<ImportedSong | null> {
   requireConfigured();
-  const supabase = createClient();
-  const { data, error } = await supabase
-    .from("songs")
-    .select(
-      "id,title,artist,duration_sec,bpm,difficulty,tab_path,audio_path,tab_file_name,audio_file_names,created_at",
-    )
-    .eq("id", songId)
-    .single<SongRow>();
+  const { data, error } = await selectSongRow(songId);
   if (error) return null;
 
   const song = toSong(data);
@@ -163,13 +242,7 @@ async function fetchSupabaseSongs(): Promise<ImportedSong[]> {
   } = await supabase.auth.getUser();
   if (!user) return [];
 
-  const { data, error } = await supabase
-    .from("songs")
-    .select(
-      "id,title,artist,duration_sec,bpm,difficulty,tab_path,audio_path,tab_file_name,audio_file_names,created_at",
-    )
-    .order("created_at", { ascending: false })
-    .returns<SongRow[]>();
+  const { data, error } = await selectSongRows();
   if (error) throw error;
   return data.map(toSong);
 }

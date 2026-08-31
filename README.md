@@ -25,18 +25,23 @@ npm test        # vitest — sync-map / audio-clock unit tests
 - `features/player/` — player screen incl. `AlphaTabPlayer` (components / data / types)
 - `lib/` — tiny shared helpers
 
-Imported songs (tab bytes as base64 + audio file names + chosen instrument) are
-persisted to `localStorage` (`features/library/data/songStore.ts`); the backing
-mp3 is too large for `localStorage` so it goes to IndexedDB
-(`features/player/data/audioStore.ts`).
-
 When Supabase is configured and the user signs in with Google, new imports are
-also saved to their account. Set `NEXT_PUBLIC_SUPABASE_URL` and
+saved to their account: tab/audio files go to Supabase Storage and Postgres
+stores metadata plus storage paths. LocalStorage is only used for local-only
+fallback imports and UI preferences. Set `NEXT_PUBLIC_SUPABASE_URL` and
 `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` in `.env.local`, run
 `supabase/schema.sql` in the Supabase SQL editor, then enable Google in
 Supabase Auth. In Google Cloud, add `http://localhost:3000` as an authorized
 JavaScript origin for local development, and use Supabase's Google callback URL
 for the OAuth redirect URI. The app redirects through `/auth/callback`.
+
+YouTube search/download in the import dialog is handled server-side through
+`yt-dlp`, with `ffmpeg`/`ffprobe` used for inspection and alignment WAV
+preparation. No YouTube API key is required. For local development on macOS:
+
+```bash
+brew install yt-dlp ffmpeg
+```
 
 The player renders one score track at a time — pick the instrument from the
 transport dropdown or the mixer's eye toggles; the choice is remembered per song.
@@ -98,7 +103,10 @@ scheduled **click overlay**, and a **Measure onsets** pass that reports per-bar
 residual (detected onset − predicted marker) with a scatter and worst-bars
 table — the numeric way to compare offset vs DTW on one song.
 
-Full audit + rationale: [`docs/sync-audit.md`](docs/sync-audit.md).
+Full audit + rationale: [`docs/sync-audit.md`](docs/sync-audit.md), then
+[`sync-audit-2.md`](docs/sync-audit-2.md) (end-of-song drift, anchors) and
+[`sync-audit-3.md`](docs/sync-audit-3.md) (whole-song drift: alphaTab truncates
+sync-point times to whole milliseconds).
 
 ## alphaTab assets
 
