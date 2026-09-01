@@ -372,10 +372,16 @@ export class TrackSynth {
     const gain = ctx.createGain();
     const filter = ctx.createBiquadFilter();
     filter.type = "lowpass";
-    // Brighter attack that settles — the classic plucked-string gesture.
-    filter.frequency.setValueAtTime(Math.min(6000, freq * 8), when);
+    const lowRegister = note.midi < 45;
+
+    // Brighter attack that settles — the classic plucked-string gesture. Bass
+    // notes keep more upper harmonics so they survive laptop/phone speakers.
+    filter.frequency.setValueAtTime(
+      Math.min(7000, freq * (lowRegister ? 14 : 8)),
+      when,
+    );
     filter.frequency.exponentialRampToValueAtTime(
-      Math.max(200, freq * 3),
+      Math.max(lowRegister ? 360 : 200, freq * (lowRegister ? 7 : 3)),
       when + Math.min(0.25, dur),
     );
     // Q kept at ~0.7 (Butterworth): resonance here multiplies across voices.
@@ -390,14 +396,26 @@ export class TrackSynth {
     osc2.detune.setValueAtTime(6, when);
 
     const mix2 = ctx.createGain();
-    mix2.gain.value = 0.25;
+    mix2.gain.value = lowRegister ? 0.42 : 0.25;
 
     osc1.connect(gain);
     osc2.connect(mix2).connect(gain);
+    const oscillators = [osc1, osc2];
+    const cleanupNodes: AudioNode[] = [filter, mix2];
+    if (lowRegister) {
+      const osc3 = ctx.createOscillator();
+      osc3.type = "triangle";
+      osc3.frequency.setValueAtTime(freq * 2, when);
+      const octaveMix = ctx.createGain();
+      octaveMix.gain.value = 0.18;
+      osc3.connect(octaveMix).connect(gain);
+      oscillators.push(osc3);
+      cleanupNodes.push(octaveMix);
+    }
     gain.connect(filter).connect(this.out);
 
     // Conservative per-voice level; the bus limiter catches dense chords.
-    const peak = note.velocity * 0.12;
+    const peak = note.velocity * (lowRegister ? 0.16 : 0.12);
     const release = 0.09;
     gain.gain.setValueAtTime(0, when);
     gain.gain.linearRampToValueAtTime(peak, when + 0.006);
@@ -408,20 +426,19 @@ export class TrackSynth {
     gain.gain.setTargetAtTime(1e-4, when + dur, release / 3);
 
     const stopAt = when + dur + release;
-    osc1.start(when);
-    osc2.start(when);
-    osc1.stop(stopAt);
-    osc2.stop(stopAt);
+    for (const osc of oscillators) {
+      osc.start(when);
+      osc.stop(stopAt);
+    }
 
-    const voice = { osc: [osc1, osc2], gain };
+    const voice = { osc: oscillators, gain };
     this.voices.push(voice);
     osc1.onended = () => {
       const i = this.voices.indexOf(voice);
       if (i >= 0) this.voices.splice(i, 1);
       try {
         gain.disconnect();
-        filter.disconnect();
-        mix2.disconnect();
+        for (const node of cleanupNodes) node.disconnect();
       } catch {
         /* noop */
       }

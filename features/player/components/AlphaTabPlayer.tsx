@@ -365,6 +365,18 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     );
   }, []);
 
+  const syncSynthPlayback = useCallback((forcePlaying = false) => {
+    const synth = synthRef.current;
+    const audio = backingAudioRef.current;
+    if (!synth || !audio) return;
+    const shouldPlay = forcePlaying || (!audio.paused && !audio.ended);
+    if (shouldPlay) {
+      synth.start(audio.currentTime, audio.playbackRate || 1);
+    } else {
+      synth.stop();
+    }
+  }, []);
+
   useEffect(() => {
     let disposed = false;
     let api: any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -448,8 +460,10 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
         });
         api.playerStateChanged.on((e: { state: number }) => {
           if (disposed) return;
-          setPlaying(e.state === 1);
-          onStateChanged(e.state === 1);
+          const isPlaying = e.state === 1;
+          setPlaying(isPlaying);
+          onStateChanged(isPlaying);
+          syncSynthPlayback(isPlaying);
         });
         api.playerPositionChanged.on(
           (e: { currentTime: number; endTime: number; isSeek: boolean }) => {
@@ -719,6 +733,7 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
         if (cancelled) return;
         synthRef.current?.setNotes(notes);
         setSynthNoteCount(notes.length);
+        syncSynthPlayback();
       })
       .catch((err) => {
         console.error("[AlphaTabPlayer] track notes failed", err);
@@ -727,12 +742,13 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     return () => {
       cancelled = true;
     };
-  }, [tabData, selectedTrack]);
+  }, [tabData, selectedTrack, syncSynthPlayback]);
 
   // The synth is positioned by the same mapping as the cursor.
   useEffect(() => {
     synthRef.current?.setSyncMap(syncMap);
-  }, [syncMap]);
+    syncSynthPlayback();
+  }, [syncMap, syncSynthPlayback]);
 
   useEffect(() => {
     synthRef.current?.setVolume(synthMuted ? 0 : synthVol);
@@ -747,21 +763,17 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   useEffect(() => {
     const audio = backingAudioRef.current;
     if (!audio) return;
-    const sync = () => {
-      const synth = synthRef.current;
-      if (!synth) return;
-      if (audio.paused) synth.stop();
-      else synth.start(audio.currentTime, audio.playbackRate || 1);
-    };
+    const sync = () => syncSynthPlayback();
     for (const ev of ["play", "playing", "pause", "seeked", "ratechange", "ended"]) {
       audio.addEventListener(ev, sync);
     }
+    sync();
     return () => {
       for (const ev of ["play", "playing", "pause", "seeked", "ratechange", "ended"]) {
         audio.removeEventListener(ev, sync);
       }
     };
-  }, [hasBacking]);
+  }, [hasBacking, syncSynthPlayback]);
 
   // Bar/tempo timeline straight from the GP file. Needed to place sync points on
   // (barIndex, barPosition) and to know the score length before playback starts.
