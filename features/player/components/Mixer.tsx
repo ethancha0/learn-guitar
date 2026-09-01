@@ -21,6 +21,10 @@ import {
   SPEED_SLIDER_MAX,
 } from "@/features/player/data/playbackSpeed";
 import { AudioOffsetControl } from "./AudioOffsetControl";
+import {
+  mediaVolumeIsSettable,
+  useAudioContextState,
+} from "@/features/player/data/audioEngine";
 
 export interface MixerTrack {
   index: number;
@@ -208,7 +212,30 @@ function ChannelRow({
   );
 }
 
-/** A labelled on/off row, styled like the channel strips around it. */
+/**
+ * Why the levels might not be doing anything.
+ *
+ * The synth and (on iOS) the recording both play through one `AudioContext`,
+ * which browsers keep asleep until a user gesture wakes it — and which iOS
+ * additionally parks in `interrupted` after a call or a screen lock. When that
+ * happens the sliders move and nothing changes, which is impossible to guess
+ * at; saying so beats leaving it silent.
+ */
+function AudioEngineNote() {
+  const state = useAudioContextState();
+  if (state === "running") return null;
+  return (
+    <p className="px-1 text-[11px] leading-snug text-amber-400/90" role="status">
+      {state === "interrupted"
+        ? "Audio was interrupted by the system — press play to start it again."
+        : "Audio hasn't started yet — press play to wake it up."}
+      {!mediaVolumeIsSettable() &&
+        " On iOS the recording level runs through it too."}
+    </p>
+  );
+}
+
+/** A labelled on/off row, styled like the channel strips around it. *//** A labelled on/off row, styled like the channel strips around it. */
 function ToggleRow({
   icon,
   label,
@@ -386,6 +413,7 @@ export function Mixer({
                   onMute={onSynthMute}
                 />
               )}
+              <AudioEngineNote />
               {hasBacking && (
                 <div className="rounded-md bg-surface-overlay px-3 py-2.5">
                   <AudioOffsetControl

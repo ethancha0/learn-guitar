@@ -17,6 +17,7 @@
  */
 
 import type { SyncMap } from "./syncMap";
+import { getAudioContext, unlockAudio } from "./audioEngine";
 
 export interface SynthNote {
   /** Onset on the score timeline, seconds. */
@@ -234,13 +235,18 @@ export class TrackSynth {
 
   /**
    * Start the audio hardware. Must be called from a real user gesture — browsers
-   * create an `AudioContext` suspended and `resume()` silently stays pending
-   * otherwise. Deliberately fire-and-forget: awaiting a blocked resume hangs.
+   * create an `AudioContext` suspended and it stays that way otherwise.
+   *
+   * Delegated to `unlockAudio` when this synth runs on the shared context, so
+   * the iOS silent-buffer kick happens here too; a synth built on its own
+   * context (offline rendering in tests/diagnostics) just resumes.
    */
   resume(): void {
-    // `resume()` is unavailable on an OfflineAudioContext that hasn't started,
-    // which is how the engine is rendered in tests/diagnostics.
     if (this.ctx.state === "running" || typeof this.ctx.resume !== "function") {
+      return;
+    }
+    if (this.ctx === getAudioContext()) {
+      unlockAudio();
       return;
     }
     try {

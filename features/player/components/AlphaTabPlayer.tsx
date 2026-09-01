@@ -76,6 +76,13 @@ import {
   type BarTickRange,
 } from "@/features/player/data/loopRange";
 import { buildCountInPlan } from "@/features/player/data/countIn";
+import {
+  captureMediaElement,
+  getAudioContext,
+  mediaVolumeIsSettable,
+  unlockAudio,
+  useAudioContextState,
+} from "@/features/player/data/audioEngine";
 import { playCountIn } from "@/features/player/data/clickTrack";
 import { Mixer, type MixerTrack } from "./Mixer";
 import { LoopControl } from "./LoopControl";
@@ -243,6 +250,9 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   const cancelCountInRef = useRef<(() => void) | null>(null);
   const countInTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const playerFinishedRef = useRef<() => void>(() => {});
+  // Set only where `audio.volume` is ignored (iOS): the recording's level then
+  // comes from this gain node instead. See the level effect below.
+  const backingGainRef = useRef<GainNode | null>(null);
 
   // Instrument / track state
   const [tracks, setTracks] = useState<MixerTrack[]>([]);
@@ -287,6 +297,7 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   const [synthMuted, setSynthMuted] = useState(false);
   const [synthNoteCount, setSynthNoteCount] = useState(0);
   const synthRef = useRef<TrackSynth | null>(null);
+  const audioContextState = useAudioContextState();
   const synthPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [autoAligning, setAutoAligning] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | undefined>();
@@ -769,14 +780,51 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
 
   // --- synthesized reference tone -------------------------------------------
 
-  // One synth for the life of the player.
+  // iOS will not start the audio hardware until something is played through
+  // the context from inside a user gesture, and a gesture anywhere on the page
+  // counts — so the whole player unlocks it, not just the play button. Kept
+  // live (rather than `once`) because iOS parks the context in `interrupted`
+  // after a call or a screen lock, and only another gesture brings it back.
   useEffect(() => {
-    const Ctx: typeof AudioContext =
-      window.AudioContext ??
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (window as any).webkitAudioContext;
-    if (!Ctx) return;
-    const synth = new TrackSynth(new Ctx());
+    const unlock = () => unlockAudio();
+    const events = ["pointerdown", "touchend", "keydown"] as const;
+    for (const ev of events) {
+      window.addEventListener(ev, unlock, { passive: true });
+    }
+    document.addEventListener("visibilitychange", unlock);
+    return () => {
+      for (const ev of events) window.removeEventListener(ev, unlock);
+      document.removeEventListener("visibilitychange", unlock);
+    };
+  }, []);
+
+  // Take the recording's output over once — and only once — the context is
+  // actually running. Capturing an element is a one-way door: from then on it
+  // plays *only* through the graph, so doing it against a suspended context
+  // would silence the recording outright.
+  useEffect(() => {
+    if (mediaVolumeIsSettable() || backingGainRef.current) return;
+    if (audioContextState !== "running") return;
+    const audio = backingAudioRef.current;
+    if (!audio || !hasBacking) return;
+    const gain = captureMediaElement(audio);
+    if (!gain) return;
+    gain.gain.value = backingMuted ? 0 : Math.min(1, backingVol);
+    backingGainRef.current = gain;
+    if (IS_DEV) {
+      (window as unknown as { __backingGain?: GainNode }).__backingGain = gain;
+    }
+    // The element's own volume is meaningless now; leave it wide open so the
+    // gain node is the only thing attenuating.
+    audio.volume = 1;
+  }, [audioContextState, hasBacking, backingVol, backingMuted]);
+
+  // One synth for the life of the player, on the context shared with the
+  // recording — see `audioEngine.ts`.
+  useEffect(() => {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    const synth = new TrackSynth(ctx);
     synthRef.current = synth;
     if (IS_DEV) {
       // Debug handles: the live instance, plus the class so the engine can be
@@ -925,9 +973,21 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   }, [tracks, playerReady]);
 
   // Recording level → the <audio> element, and persist (debounced).
+  //
+  // iOS ignores writes to `audio.volume` (level is the hardware buttons' job
+  // there), which left the recording slider and its mute button doing nothing
+  // on a phone. Where the write doesn't stick, the element is routed through
+  // the Web Audio graph instead and a `GainNode` carries the level.
   useEffect(() => {
     const audio = backingAudioRef.current;
-    if (audio) audio.volume = backingMuted ? 0 : Math.min(1, backingVol);
+    const level = backingMuted ? 0 : Math.min(1, backingVol);
+    const gain = backingGainRef.current;
+    if (gain) {
+      const ctx = getAudioContext()!;
+      gain.gain.setTargetAtTime(level, ctx.currentTime, 0.015);
+    } else if (audio) {
+      audio.volume = level;
+    }
 
     if (backingPersistTimer.current) clearTimeout(backingPersistTimer.current);
     backingPersistTimer.current = setTimeout(() => {
@@ -1028,10 +1088,10 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
 
   const togglePlay = useCallback(() => {
     if (controlsDisabled) return;
-    // Resume the synth's AudioContext on the click itself. Chrome starts it
+    // Start the audio hardware on the click itself. Browsers create the context
     // suspended, and the path click → alphaTab → <audio> play event is too many
-    // async hops to reliably keep the user-activation that `resume()` needs.
-    synthRef.current?.resume();
+    // async hops to reliably keep the user activation that unlocking needs.
+    unlockAudio();
     // Pressing play again during the count-in aborts it rather than stacking a
     // second one on top.
     if (cancelCountInRef.current) {
