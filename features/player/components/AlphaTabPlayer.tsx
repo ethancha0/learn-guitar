@@ -5,11 +5,11 @@ import {
   Play,
   Pause,
   Square,
-  Repeat,
   Printer,
   SlidersHorizontal,
   Activity,
   Music,
+  Timer,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
@@ -22,6 +22,8 @@ import {
   getTabOnly,
   getStoredTabOnly,
   setTabOnly,
+  getCountIn,
+  setCountIn,
   AUDIO_SYNC_KEY,
   AUDIO_SYNC_EVENT,
   getAudioSync,
@@ -64,7 +66,19 @@ import {
   extractTrackNotes,
   type SynthNote,
 } from "@/features/player/data/trackSynth";
+import {
+  barAtTick,
+  barRangeToTicks,
+  barTickRangesFromLookup,
+  clampBarRange,
+  ticksToBarRange,
+  type BarRange,
+  type BarTickRange,
+} from "@/features/player/data/loopRange";
+import { buildCountInPlan } from "@/features/player/data/countIn";
+import { playCountIn } from "@/features/player/data/clickTrack";
 import { Mixer, type MixerTrack } from "./Mixer";
+import { LoopControl } from "./LoopControl";
 import { AudioOffsetControl } from "./AudioOffsetControl";
 import { BackingVolumeControl } from "./BackingVolumeControl";
 import { SynthVolumeControl } from "./SynthVolumeControl";
@@ -212,7 +226,23 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   const [durationMs, setDurationMs] = useState(0);
   const [scrubbing, setScrubbing] = useState(false);
   const [speed, setSpeed] = useState(1);
+
+  // Loop section. `loopTicks` is what alphaTab actually plays; the bar numbers
+  // shown in the UI are derived from it, so a range picked by dragging on the
+  // score and one typed into the control are the same state.
   const [looping, setLooping] = useState(false);
+  const [loopTicks, setLoopTicks] = useState<{
+    startTick: number;
+    endTick: number;
+  } | null>(null);
+  const [barTicks, setBarTicks] = useState<BarTickRange[]>([]);
+
+  // Count-in: a bar of clicks before playback starts (see `countIn.ts`).
+  const [countInEnabled, setCountInEnabled] = useState(false);
+  const [countInLeft, setCountInLeft] = useState(0);
+  const cancelCountInRef = useRef<(() => void) | null>(null);
+  const countInTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const playerFinishedRef = useRef<() => void>(() => {});
 
   // Instrument / track state
   const [tracks, setTracks] = useState<MixerTrack[]>([]);
@@ -458,6 +488,12 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
         api.playerReady.on(() => {
           if (!disposed) setPlayerReady(true);
         });
+        // Also fires on every loop wrap, which is where the per-repeat
+        // count-in hangs off. Through a ref because this handler is registered
+        // once per song but has to see the current loop/count-in settings.
+        api.playerFinished.on(() => {
+          if (!disposed) playerFinishedRef.current();
+        });
         api.playerStateChanged.on((e: { state: number }) => {
           if (disposed) return;
           const isPlaying = e.state === 1;
@@ -470,6 +506,23 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
             if (disposed) return;
             setDurationMs(e.endTime);
             if (!scrubbingRef.current) setPositionMs(e.currentTime);
+          },
+        );
+        // Fires for our own range changes *and* for alphaTab's built-in
+        // drag-across-the-score selection, so both land in the same state.
+        api.playbackRangeChanged.on(
+          (e: {
+            playbackRange: { startTick: number; endTick: number } | null;
+          }) => {
+            if (disposed) return;
+            setLoopTicks(
+              e.playbackRange
+                ? {
+                    startTick: e.playbackRange.startTick,
+                    endTick: e.playbackRange.endTick,
+                  }
+                : null,
+            );
           },
         );
 
@@ -520,6 +573,14 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabData, songId]);
+
+  // Bar → tick table for the loop section. alphaTab builds its tick cache when
+  // it generates the MIDI, which is after `scoreLoaded`, so this waits for the
+  // player instead.
+  useEffect(() => {
+    if (!playerReady) return;
+    setBarTicks(barTickRangesFromLookup(apiRef.current?.tickCache?.masterBars));
+  }, [playerReady, tabData]);
 
   /** Push notation size + stave profile into alphaTab, re-rendering only on a
    *  real change (each render redraws the whole sheet). */
@@ -701,6 +762,11 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     scrubbingRef.current = scrubbing;
   }, [scrubbing]);
 
+  // localStorage is read after mount so the server and client first renders agree.
+  useEffect(() => {
+    setCountInEnabled(getCountIn());
+  }, []);
+
   // --- synthesized reference tone -------------------------------------------
 
   // One synth for the life of the player.
@@ -787,6 +853,7 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
             barIndex: b.barIndex,
             occurence: b.occurence,
             startSec: b.scoreTimeSec,
+            beats: b.beats,
           })),
           endSec: tl.endSec,
           // Beat-level sync points: alphaTab interpolates linearly between
@@ -875,6 +942,7 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     };
   }, []);
 
+  const countingIn = countInLeft > 0;
   const waitingForImportAlignment = dtwStatus === "pending";
   const controlsDisabled =
     !playerReady ||
@@ -882,30 +950,193 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     !syncSettingsLoaded ||
     waitingForImportAlignment;
 
+  const cancelCountIn = useCallback(() => {
+    cancelCountInRef.current?.();
+    cancelCountInRef.current = null;
+    for (const t of countInTimers.current) clearTimeout(t);
+    countInTimers.current = [];
+    setCountInLeft(0);
+  }, []);
+
+  /**
+   * Click the count-in, then start playback. Returns false when no count-in
+   * could be built (no tempo grid, or a nonsensical one), so the caller can
+   * just start playing.
+   */
+  const startCountIn = useCallback(() => {
+    const api = apiRef.current;
+    const ctx = synthRef.current?.context;
+    if (!api || !ctx || !barTimeline?.beatSec?.length) return false;
+
+    const startScoreSec = (api.timePosition ?? 0) / 1000;
+    const bar = [...barTimeline.bars]
+      .reverse()
+      .find((b) => b.startSec <= startScoreSec + 1e-3);
+    const plan = buildCountInPlan({
+      beatSec: barTimeline.beatSec,
+      barStartSec: barTimeline.bars.map((b) => b.startSec),
+      startScoreSec,
+      beats: bar?.beats ?? 4,
+      toAudioTime: syncMap
+        ? (t: number) => syncMap.scoreTimeToAudioTime(t)
+        : undefined,
+      playbackRate: backingAudioRef.current?.playbackRate || speed,
+    });
+    if (!plan) return false;
+
+    setCountInLeft(plan.clicks.length);
+    // Purely cosmetic countdown; the clicks themselves are on the audio clock.
+    plan.clicks.forEach((c, i) => {
+      const delayMs = (plan.durationSec - c.leadSec) * 1000;
+      countInTimers.current.push(
+        setTimeout(
+          () => setCountInLeft(plan.clicks.length - i),
+          Math.max(0, delayMs),
+        ),
+      );
+    });
+    cancelCountInRef.current = playCountIn(ctx, plan.clicks, {
+      onComplete: () => {
+        cancelCountInRef.current = null;
+        for (const t of countInTimers.current) clearTimeout(t);
+        countInTimers.current = [];
+        setCountInLeft(0);
+        apiRef.current?.playPause();
+      },
+    });
+    return true;
+  }, [barTimeline, syncMap, speed]);
+
+  /**
+   * Count the loop back in on every repeat, not just the first play.
+   *
+   * alphaTab fires `playerFinished` on each wrap and *then* rewinds to the
+   * start of the loop, so the recording is paused here and the count-in is
+   * built a tick later, once the playhead is back at the top of the section.
+   */
+  playerFinishedRef.current = () => {
+    const api = apiRef.current;
+    if (!api || !looping || !countInEnabled) return;
+    api.pause();
+    countInTimers.current.push(
+      setTimeout(() => {
+        // No usable count-in (odd tempo map) — just carry on looping.
+        if (!startCountIn()) apiRef.current?.playPause();
+      }, 0),
+    );
+  };
+
   const togglePlay = useCallback(() => {
     if (controlsDisabled) return;
     // Resume the synth's AudioContext on the click itself. Chrome starts it
     // suspended, and the path click → alphaTab → <audio> play event is too many
     // async hops to reliably keep the user-activation that `resume()` needs.
     synthRef.current?.resume();
+    // Pressing play again during the count-in aborts it rather than stacking a
+    // second one on top.
+    if (cancelCountInRef.current) {
+      cancelCountIn();
+      return;
+    }
+    if (!playing && countInEnabled && startCountIn()) return;
     apiRef.current?.playPause();
-  }, [controlsDisabled]);
+  }, [controlsDisabled, playing, countInEnabled, startCountIn, cancelCountIn]);
 
   const stop = useCallback(() => {
-    apiRef.current?.stop();
-    setPositionMs(0);
+    cancelCountIn();
+    const api = apiRef.current;
+    api?.stop();
     synthRef.current?.stop();
     const audio = backingAudioRef.current;
     if (audio) {
       audio.pause();
-      audio.currentTime = 0;
+      // alphaTab rewinds to the start of the loop section (or to 0 without
+      // one) and seeks the recording with it; forcing 0 here would drop the
+      // playhead out of the section the user is practising.
+      if (!api?.playbackRange) audio.currentTime = 0;
     }
+    setPositionMs(api?.timePosition ?? 0);
+  }, [cancelCountIn]);
+
+  // A count-in left running past unmount would start playback on a dead api.
+  useEffect(() => cancelCountIn, [cancelCountIn]);
+
+  const loopRange = useMemo(
+    () => ticksToBarRange(barTicks, loopTicks),
+    [barTicks, loopTicks],
+  );
+
+  /**
+   * Paint alphaTab's own selection markers over the looped bars, so a range
+   * typed into the control looks identical to one dragged out on the score.
+   * Best-effort: the markers are cosmetic, the range itself is the tick range.
+   */
+  const highlightBars = useCallback(
+    (range: BarRange) => {
+      const api = apiRef.current;
+      const staff = api?.score?.tracks?.[selectedTrack]?.staves?.[0];
+      if (!api?.highlightPlaybackRange || !staff) return;
+      const beatsIn = (barNumber: number) =>
+        staff.bars?.[barNumber - 1]?.voices?.[0]?.beats ?? [];
+      const startBeat = beatsIn(range.startBar)[0];
+      const endBeats = beatsIn(range.endBar);
+      const endBeat = endBeats[endBeats.length - 1];
+      if (!startBeat || !endBeat) return;
+      api.highlightPlaybackRange(startBeat, endBeat);
+    },
+    [selectedTrack],
+  );
+
+  /** Loop the given bars. Setting the range also seeks alphaTab to its start. */
+  const applyLoopRange = useCallback(
+    (range: BarRange) => {
+      const api = apiRef.current;
+      const alphaTab = alphaTabRef.current;
+      if (!api || !alphaTab) return;
+      const clamped = clampBarRange(barTicks, range);
+      const ticks = clamped && barRangeToTicks(barTicks, clamped);
+      if (!clamped || !ticks) return;
+      const playbackRange = new alphaTab.synth.PlaybackRange();
+      playbackRange.startTick = ticks.startTick;
+      playbackRange.endTick = ticks.endTick;
+      api.playbackRange = playbackRange;
+      highlightBars(clamped);
+    },
+    [barTicks, highlightBars],
+  );
+
+  const clearLoopRange = useCallback(() => {
+    const api = apiRef.current;
+    if (!api) return;
+    api.playbackRange = null;
+    api.clearPlaybackRangeHighlight?.();
+    setLoopTicks(null);
   }, []);
 
   function toggleLoop() {
+    const api = apiRef.current;
     const next = !looping;
     setLooping(next);
-    if (apiRef.current) apiRef.current.isLooping = next;
+    if (!api) return;
+    api.isLooping = next;
+    if (next) {
+      // Looping the whole song is rarely what's wanted while practising, so
+      // with no section picked yet the bar under the cursor becomes the loop.
+      if (!loopTicks) {
+        const bar = barAtTick(barTicks, api.tickPosition ?? 0);
+        if (bar !== null) applyLoopRange({ startBar: bar, endBar: bar });
+      }
+    } else {
+      // A playback range restricts playback whether or not it loops, so leaving
+      // it behind would look like the song had silently got shorter.
+      clearLoopRange();
+    }
+  }
+
+  function toggleCountIn() {
+    const next = !countInEnabled;
+    setCountInEnabled(next);
+    setCountIn(next);
   }
 
   const changeSpeed = useCallback((value: number) => {
@@ -1096,12 +1327,16 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
         <div className="flex items-center gap-2 md:contents">
           <Button
             size="icon"
-            aria-label={playing ? "Pause" : "Play"}
+            aria-label={
+              countingIn ? "Cancel count-in" : playing ? "Pause" : "Play"
+            }
             disabled={controlsDisabled}
             onClick={togglePlay}
             className="h-12 w-12 shrink-0 md:h-9 md:w-9"
           >
-            {playing ? (
+            {/* Playback is armed during the count-in, so the button reads as
+                "stop what's happening" rather than offering to start again. */}
+            {playing || countingIn ? (
               <Pause className="h-5 w-5 md:h-4 md:w-4" />
             ) : (
               <Play className="h-5 w-5 md:h-4 md:w-4" />
@@ -1151,19 +1386,30 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
             {speedToPercent(speed)}%
           </Button>
 
+          <LoopControl
+            looping={looping}
+            onToggle={toggleLoop}
+            range={loopRange}
+            onRangeChange={applyLoopRange}
+            onClear={clearLoopRange}
+            firstBar={barTicks[0]?.barNumber ?? 1}
+            lastBar={barTicks[barTicks.length - 1]?.barNumber ?? 1}
+            disabled={controlsDisabled || barTicks.length === 0}
+          />
           <Button
             variant="ghost"
             size="icon"
-            aria-label="Toggle loop"
-            aria-pressed={looping}
+            aria-label="Count-in before playing"
+            title="Count-in before playing"
+            aria-pressed={countInEnabled}
             disabled={controlsDisabled}
             className={cn(
               "h-10 w-10 shrink-0 md:h-9 md:w-9",
-              looping && "text-accent",
+              countInEnabled && "text-accent",
             )}
-            onClick={toggleLoop}
+            onClick={toggleCountIn}
           >
-            <Repeat className="h-5 w-5 md:h-4 md:w-4" />
+            <Timer className="h-5 w-5 md:h-4 md:w-4" />
           </Button>
           <Button
             variant="ghost"
@@ -1326,6 +1572,18 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
             error={status === "error"}
           />
         )}
+        {countInLeft > 0 && (
+          <div
+            className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center"
+            role="status"
+            aria-live="assertive"
+            aria-label={`Count-in, ${countInLeft} to go`}
+          >
+            <span className="flex h-24 w-24 items-center justify-center rounded-full bg-black/70 text-5xl font-semibold tabular-nums text-white shadow-xl">
+              {countInLeft}
+            </span>
+          </div>
+        )}
         <div
           ref={hostRef}
           className={cn("alphatab-host p-1 md:p-4", overlayVisible && "invisible")}
@@ -1342,6 +1600,9 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
           tabOnly={tabOnly}
           onTabOnlyToggle={toggleTabOnly}
           tabOnlyDisabled={status !== "ready"}
+          countIn={countInEnabled}
+          onCountInToggle={toggleCountIn}
+          countInDisabled={controlsDisabled}
           offsetMs={offsetMs}
           onOffsetChange={handleOffsetChange}
           onOffsetReset={handleOffsetReset}

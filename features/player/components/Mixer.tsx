@@ -10,6 +10,7 @@ import {
   Guitar,
   Gauge,
   Music,
+  Timer,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -41,6 +42,10 @@ interface MixerProps {
   tabOnly: boolean;
   onTabOnlyToggle: () => void;
   tabOnlyDisabled?: boolean;
+  /** A bar of metronome clicks before playback starts. */
+  countIn: boolean;
+  onCountInToggle: () => void;
+  countInDisabled?: boolean;
   offsetMs: number;
   onOffsetChange: (nextMs: number) => void;
   onOffsetReset: () => void;
@@ -203,6 +208,49 @@ function ChannelRow({
   );
 }
 
+/** A labelled on/off row, styled like the channel strips around it. */
+function ToggleRow({
+  icon,
+  label,
+  sublabel,
+  on,
+  onToggle,
+  disabled,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  sublabel?: string;
+  on: boolean;
+  onToggle: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={disabled}
+      aria-pressed={on}
+      className="flex items-center gap-2 rounded-md bg-surface-overlay px-3 py-2.5 text-left disabled:opacity-50"
+    >
+      {icon}
+      <span className="flex-1">
+        <span className="block text-xs font-medium text-zinc-200">{label}</span>
+        {sublabel && (
+          <span className="block text-[10px] text-zinc-500">{sublabel}</span>
+        )}
+      </span>
+      <span
+        className={cn(
+          "text-[10px] font-semibold uppercase",
+          on ? "text-accent" : "text-zinc-500",
+        )}
+      >
+        {on ? "On" : "Off"}
+      </span>
+    </button>
+  );
+}
+
 /**
  * Channel strip for the imported recording + score tracks. A right-hand rail on
  * desktop; on phones it becomes a bottom sheet and doubles as the drawer for
@@ -216,6 +264,9 @@ export function Mixer({
   tabOnly,
   onTabOnlyToggle,
   tabOnlyDisabled,
+  countIn,
+  onCountInToggle,
+  countInDisabled,
   offsetMs,
   onOffsetChange,
   onOffsetReset,
@@ -287,26 +338,21 @@ export function Mixer({
                 className="h-1.5 w-full cursor-pointer accent-accent disabled:cursor-not-allowed disabled:opacity-50"
               />
             </div>
-            <button
-              type="button"
-              onClick={onTabOnlyToggle}
+            <ToggleRow
+              icon={<Music className="h-4 w-4 shrink-0 text-zinc-400" />}
+              label="Tab only"
+              on={tabOnly}
+              onToggle={onTabOnlyToggle}
               disabled={tabOnlyDisabled}
-              aria-pressed={tabOnly}
-              className="flex items-center gap-2 rounded-md bg-surface-overlay px-3 py-2.5 text-left disabled:opacity-50"
-            >
-              <Music className="h-4 w-4 shrink-0 text-zinc-400" />
-              <span className="flex-1 text-xs font-medium text-zinc-200">
-                Tab only
-              </span>
-              <span
-                className={cn(
-                  "text-[10px] font-semibold uppercase",
-                  tabOnly ? "text-accent" : "text-zinc-500",
-                )}
-              >
-                {tabOnly ? "On" : "Off"}
-              </span>
-            </button>
+            />
+            <ToggleRow
+              icon={<Timer className="h-4 w-4 shrink-0 text-zinc-400" />}
+              label="Count-in"
+              sublabel="One bar of clicks before playback"
+              on={countIn}
+              onToggle={onCountInToggle}
+              disabled={countInDisabled}
+            />
           </div>
 
           {(hasBacking || hasSynth) && (

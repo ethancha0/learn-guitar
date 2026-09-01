@@ -182,6 +182,25 @@ export function setTabOnly(value: boolean): void {
   window.localStorage.setItem(TAB_ONLY_KEY, value ? "1" : "0");
 }
 
+// --- Count-in (global) -------------------------------------------------------
+
+const COUNT_IN_KEY = "learn-bass.count-in";
+
+/**
+ * Whether a bar of metronome clicks plays before playback starts. A practice
+ * habit rather than a property of a song, so it is stored globally like the
+ * notation mode.
+ */
+export function getCountIn(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(COUNT_IN_KEY) === "1";
+}
+
+export function setCountIn(value: boolean): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(COUNT_IN_KEY, value ? "1" : "0");
+}
+
 // --- Audio sync settings (per song) ----------------------------------------------
 
 export const AUDIO_SYNC_KEY = "learn-bass.audio-sync";

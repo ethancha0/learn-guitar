@@ -618,7 +618,13 @@ export interface BarTimeline {
    * bar's index in the score and `occurence` says which pass through it this is;
    * alphaTab addresses sync points by that pair.
    */
-  bars: Array<{ barIndex: number; startSec: number; occurence?: number }>;
+  bars: Array<{
+    barIndex: number;
+    startSec: number;
+    occurence?: number;
+    /** Beats in the bar (time-signature numerator), for the count-in. */
+    beats?: number;
+  }>;
   /** Score end time in seconds. */
   endSec: number;
   /**
