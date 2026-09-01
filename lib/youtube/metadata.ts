@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -16,6 +17,38 @@ const YOUTUBE_ID_RE = /^[A-Za-z0-9_-]{11}$/;
 const bundledYtDlpPath = (youtubeDl as unknown as {
   constants?: { YOUTUBE_DL_PATH?: string };
 }).constants?.YOUTUBE_DL_PATH;
+
+function existingPath(...parts: string[]): string | undefined {
+  const candidate = path.join(...parts);
+  return existsSync(candidate) ? candidate : undefined;
+}
+
+function usablePath(candidate: string | null | undefined): string | undefined {
+  if (!candidate) return undefined;
+  return path.isAbsolute(candidate) && existsSync(candidate)
+    ? candidate
+    : undefined;
+}
+
+function bundledFfmpegPath(): string | undefined {
+  return (
+    usablePath(ffmpegPath) ||
+    existingPath(process.cwd(), "node_modules", "ffmpeg-static", "ffmpeg")
+  );
+}
+
+function bundledFfprobePath(): string | undefined {
+  return (
+    usablePath(ffprobePath) ||
+    existingPath(
+      process.cwd(),
+      "node_modules",
+      "@derhuerst",
+      "ffprobe-static",
+      "ffprobe",
+    )
+  );
+}
 
 interface ProcessResult {
   code: number;
@@ -122,9 +155,19 @@ function resolveToolCommand(command: string): string {
     case "yt-dlp":
       return process.env.YT_DLP_PATH || process.env.YOUTUBE_DL_PATH || bundledYtDlpPath || command;
     case "ffmpeg":
-      return process.env.FFMPEG_PATH || process.env.FFMPEG_BIN || ffmpegPath || command;
+      return (
+        process.env.FFMPEG_PATH ||
+        process.env.FFMPEG_BIN ||
+        bundledFfmpegPath() ||
+        command
+      );
     case "ffprobe":
-      return process.env.FFPROBE_PATH || process.env.FFPROBE_BIN || ffprobePath || command;
+      return (
+        process.env.FFPROBE_PATH ||
+        process.env.FFPROBE_BIN ||
+        bundledFfprobePath() ||
+        command
+      );
     default:
       return command;
   }

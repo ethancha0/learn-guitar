@@ -210,24 +210,48 @@ export async function uploadSongToAccount({
   return persisted;
 }
 
+async function withDownloadTimeout<T>(
+  promise: Promise<T>,
+  kind: "tab" | "audio",
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `Timed out downloading the ${kind} file for this account song.`,
+              ),
+            ),
+          120_000,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function downloadAccountSongBlob(
-  songId: string,
+  row: SongRow,
   kind: "tab" | "audio",
 ): Promise<Blob> {
-  const response = await fetch(
-    `/api/songs/${encodeURIComponent(songId)}/${kind}`,
-    { cache: "no-store" },
+  const supabase = createClient();
+  const storagePath = kind === "tab" ? row.tab_path : row.audio_path;
+  const { data, error } = await withDownloadTimeout(
+    supabase.storage.from(BUCKET).download(storagePath),
+    kind,
   );
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as {
-      error?: string;
-    } | null;
+  if (error || !data) {
     throw new Error(
-      body?.error ??
-        `Could not download ${kind} file for this account song (${response.status}).`,
+      error?.message ??
+        `Could not download the ${kind} file for this account song.`,
     );
   }
-  return response.blob();
+  return data;
 }
 
 export async function hydrateSupabaseSong(songId: string): Promise<ImportedSong | null> {
@@ -237,8 +261,8 @@ export async function hydrateSupabaseSong(songId: string): Promise<ImportedSong 
 
   const song = toSong(data);
   const [tabBlob, audioBlob] = await Promise.all([
-    downloadAccountSongBlob(song.id, "tab"),
-    downloadAccountSongBlob(song.id, "audio"),
+    downloadAccountSongBlob(data, "tab"),
+    downloadAccountSongBlob(data, "audio"),
   ]);
   const tabBytes = new Uint8Array(await tabBlob.arrayBuffer());
   await putBackingAudio(song.id, audioBlob);

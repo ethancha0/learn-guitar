@@ -53,6 +53,17 @@ async function materializeCookies() {
     ? raw
     : Buffer.from(raw, "base64").toString("utf8");
 
+  // yt-dlp only reads Netscape format, and several popular browser extensions
+  // export JSON by default. Fail here with something actionable rather than
+  // letting every request die on yt-dlp's own terse complaint.
+  if (!/^#|\t/m.test(contents)) {
+    console.error(
+      "YT_DLP_COOKIES is not a Netscape cookies.txt file (JSON export?). " +
+        "Re-export in Netscape/cookies.txt format. Continuing without cookies.",
+    );
+    return;
+  }
+
   const dir = path.join(tmpdir(), "yt-worker");
   await mkdir(dir, { recursive: true });
   const file = path.join(dir, "cookies.txt");

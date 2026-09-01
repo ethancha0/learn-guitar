@@ -169,18 +169,31 @@ export function run(command, args, { timeoutMs = 120_000 } = {}) {
 }
 
 /**
- * yt-dlp's bot-check failure is the single most likely production error, so
+ * YouTube refusing the host's IP is the single most likely production error, so
  * surface it as its own code instead of a generic download failure.
+ *
+ * It arrives in more than one shape. A plain `HTTP Error 403` on the InnerTube
+ * endpoints is the common one from a datacenter IP; the friendlier "confirm
+ * you're not a bot" wording only shows up on some routes.
  */
+const BLOCKED_PATTERNS = [
+  /confirm (?:that )?you'?re not a bot/i,
+  /sign in to confirm/i,
+  /HTTP Error 40[39]/i,
+  /Unable to download API page/i,
+  /blocked it on copyright grounds/i,
+];
+
 function downloadError(message, stderr) {
-  if (/confirm (?:that )?you'?re not a bot|Sign in to confirm/i.test(stderr ?? "")) {
+  const text = stderr ?? "";
+  if (BLOCKED_PATTERNS.some((pattern) => pattern.test(text))) {
     return new WorkerError(
       "BOT_CHECK",
-      "YouTube is blocking this server's IP. Configure YT_DLP_COOKIES or YT_DLP_PROXY on the worker.",
-      stderr,
+      "YouTube refused this server's IP address. Add cookies (YT_DLP_COOKIES) or a proxy (YT_DLP_PROXY) to the worker.",
+      text,
     );
   }
-  return new WorkerError("DOWNLOAD_FAILED", message, stderr);
+  return new WorkerError("DOWNLOAD_FAILED", message, text);
 }
 
 export async function inspectMedia(filePath) {

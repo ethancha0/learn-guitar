@@ -35,7 +35,7 @@ export default function PlayerPage({
   }, [songId]);
 
   useEffect(() => {
-    if (!hydrated || song?.tabData || checkingAccount || accountChecked) return;
+    if (!hydrated || song?.tabData || accountChecked) return;
 
     let cancelled = false;
     setCheckingAccount(true);
@@ -67,7 +67,7 @@ export default function PlayerPage({
     return () => {
       cancelled = true;
     };
-  }, [accountChecked, checkingAccount, hydrated, song?.tabData, songId]);
+  }, [accountChecked, hydrated, song?.tabData, songId]);
 
   if (!song) {
     // Account songs are hydrated after mount, so wait before deciding a song

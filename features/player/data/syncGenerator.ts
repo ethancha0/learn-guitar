@@ -127,6 +127,29 @@ interface AlignApiResponse {
   recordingDurationSec?: number;
 }
 
+async function readAlignError(response: Response): Promise<string | undefined> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    const body = (await response.json().catch(() => null)) as {
+      error?: unknown;
+      message?: unknown;
+      details?: unknown;
+    } | null;
+    const message =
+      typeof body?.message === "string"
+        ? body.message
+        : typeof body?.error === "string"
+          ? body.error
+          : undefined;
+    const details =
+      typeof body?.details === "string" ? body.details : undefined;
+    return [message, details].filter(Boolean).join(" ") || undefined;
+  }
+
+  const text = await response.text().catch(() => "");
+  return text.trim().slice(0, 500) || undefined;
+}
+
 export class DtwSyncGenerator implements SyncGenerator {
   readonly id = "dtw";
 
@@ -162,11 +185,14 @@ export class DtwSyncGenerator implements SyncGenerator {
     }
 
     if (!res.ok) {
+      const detail = await readAlignError(res);
       return {
         points: [],
         method: "dtw",
         status: "failed",
-        message: `Alignment service returned ${res.status}.`,
+        message: detail
+          ? `Alignment service returned ${res.status}: ${detail}`
+          : `Alignment service returned ${res.status}.`,
       };
     }
 

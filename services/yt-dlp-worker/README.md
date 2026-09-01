@@ -100,23 +100,44 @@ Redeploy so the functions pick up the new env vars.
 
 ## When YouTube blocks the worker
 
-A `BOT_CHECK` error means YouTube rejected the container's IP. In rough order of
-effort:
+A `BOT_CHECK` error means YouTube rejected the container's IP. It shows up in
+the logs as either "Sign in to confirm you're not a bot" or, more often from a
+datacenter, a bare `HTTP Error 403: Forbidden` on `youtubei/v1/*`.
 
-1. **Try a different extractor client** — often enough on its own:
-   `YT_DLP_EXTRACTOR_ARGS=youtube:player_client=android,web_safari`
-2. **Add cookies.** Export `cookies.txt` from a browser signed in to YouTube
-   (any "Get cookies.txt" extension), then:
+### Cookies (the usual fix)
+
+1. Sign into YouTube in a browser using a **throwaway Google account**. These
+   cookies grant access to that account, and YouTube may flag it for logging in
+   from a datacenter — do not use your personal account.
+2. Export cookies with any "Get cookies.txt" browser extension, making sure the
+   format is **Netscape / cookies.txt**, not JSON. The file starts with
+   `# Netscape HTTP Cookie File`. The worker rejects a JSON export with an
+   explicit log line rather than failing on every request.
+3. Set it as a secret and redeploy:
    ```bash
-   fly secrets set YT_DLP_COOKIES="$(base64 < cookies.txt)"
+   fly secrets set YT_DLP_COOKIES="$(base64 < ~/Downloads/cookies.txt)"
    ```
-   Use a throwaway Google account — these cookies grant access to it, and
-   YouTube may flag the account for datacenter access. Cookies expire; expect to
-   refresh them periodically.
-3. **Route through a proxy.** `YT_DLP_PROXY` with a residential proxy is the
-   most reliable option and the only one that really survives at volume.
-4. **Move the worker.** Some hosts' IP ranges are less burnt than others; a
-   cheap VPS on a residential-adjacent network beats a big cloud.
+   Raw file contents work too — the worker detects which it was given. Line
+   wrapping in the base64 is fine.
+4. Confirm it took: `curl https://<app>.fly.dev/health` should report
+   `"cookies":true`.
+
+Cookies expire after a few weeks, and the symptom is `BOT_CHECK` returning.
+Re-export and re-run the `fly secrets set` to refresh. Note that yt-dlp rewrites
+the cookie jar as it runs, so the in-container copy drifts from your secret; the
+secret is only the seed at boot.
+
+### If cookies are not enough
+
+- **A different extractor client**, occasionally worth a try for downloads
+  (it does not affect search, which uses its own endpoint):
+  `YT_DLP_EXTRACTOR_ARGS=youtube:player_client=android,web_safari`
+- **Route through a proxy.** `YT_DLP_PROXY` with a residential proxy is the most
+  reliable option and the only one that really survives at volume.
+- **Move the worker.** Some hosts' IP ranges are less burnt than others; a cheap
+  VPS on a residential-adjacent network beats a big cloud.
+- **Search only:** the official YouTube Data API v3 is never IP-blocked. It has
+  no audio endpoint, so it cannot replace the download path.
 
 ## Keeping yt-dlp current
 

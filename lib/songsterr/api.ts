@@ -51,6 +51,13 @@ function trackFamily(instrumentId: number | undefined, name: string): SongsterrT
   return "other";
 }
 
+/** A ref without a pinned revision resolves to whatever Songsterr serves today. */
+export function metaPath(ref: SongsterrRef): string {
+  return ref.revisionId
+    ? `/api/meta/${ref.songId}/${ref.revisionId}`
+    : `/api/meta/${ref.songId}`;
+}
+
 export function songsterrSongUrl(songId: number, trackIndex?: number): string {
   const suffix = trackIndex === undefined ? "" : `t${trackIndex}`;
   return `${SONGSTERR_ORIGIN}/a/wa/song?id=${songId}${suffix ? `&track=${trackIndex}` : ""}`;
@@ -169,11 +176,7 @@ export async function resolveSongsterrSong(
   input: string,
 ): Promise<{ song: SongsterrSong; ref: SongsterrRef }> {
   const ref = parseSongsterrUrl(input);
-  const path = ref.revisionId
-    ? `/api/meta/${ref.songId}/${ref.revisionId}`
-    : `/api/meta/${ref.songId}`;
-
-  const song = toSong(await getJson<RawSong>(path));
+  const song = toSong(await getJson<RawSong>(metaPath(ref)));
   if (!song) {
     throw new SongsterrError("NOT_FOUND", "Songsterr returned no song for that link.");
   }
