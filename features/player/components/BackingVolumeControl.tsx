@@ -24,11 +24,11 @@ export function BackingVolumeControl({
   return (
     <div className="flex items-center gap-1.5" aria-label="Recording volume">
       <Button
-        variant="ghost"
+        variant="outline"
         size="icon"
         aria-pressed={muted}
         aria-label={muted ? "Unmute recording" : "Mute recording"}
-        className={cn(muted && "text-red-400")}
+        className={cn(muted && "text-accent")}
         disabled={disabled}
         onClick={onMuteToggle}
       >
@@ -47,7 +47,7 @@ export function BackingVolumeControl({
         disabled={disabled}
         onChange={(e) => onVolume(Number(e.target.value))}
         aria-label="Recording volume"
-        className="h-1 w-24 cursor-pointer accent-accent disabled:cursor-not-allowed disabled:opacity-50"
+        className="h-0.5 w-[88px] shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
       />
     </div>
   );

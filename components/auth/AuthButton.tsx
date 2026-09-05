@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { LogIn, LogOut, UserCircle } from "lucide-react";
+import { LogIn, LogOut, User as UserIcon } from "lucide-react";
 import type { User } from "@supabase/supabase-js";
 import { Button } from "@/components/ui/Button";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { cn } from "@/lib/cn";
 
 export function AuthButton({ compact = false }: { compact?: boolean }) {
   const [user, setUser] = useState<User | null>(null);
@@ -72,10 +73,17 @@ export function AuthButton({ compact = false }: { compact?: boolean }) {
   }
 
   return (
-    <div className="flex min-w-0 items-center gap-2">
+    <div
+      className={cn(
+        "flex min-w-0 items-center gap-2",
+        // The signed-in row closes the rail on a strong rule, the way the nav
+        // list opens on one.
+        !compact && "border-t border-rule-strong pt-3",
+      )}
+    >
       {!compact && (
-        <span className="inline-flex min-w-0 items-center gap-1.5 text-xs text-zinc-400">
-          <UserCircle className="h-4 w-4 shrink-0" />
+        <span className="inline-flex min-w-0 items-center gap-2 font-mono text-xs text-ink-muted">
+          <UserIcon className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
           <span className="truncate">{user.email}</span>
         </span>
       )}
@@ -86,8 +94,9 @@ export function AuthButton({ compact = false }: { compact?: boolean }) {
         onClick={signOut}
         disabled={busy}
         aria-label="Sign out"
+        className="text-ink-faint hover:text-ink"
       >
-        <LogOut className="h-4 w-4" />
+        <LogOut className="h-3.5 w-3.5" />
         {!compact && "Sign out"}
       </Button>
     </div>

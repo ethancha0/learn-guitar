@@ -100,7 +100,7 @@ const COL = {
 };
 
 function residualColour(absMs: number): string {
-  if (absMs < 40) return "#4ade80";
+  if (absMs < 40) return "#16181c";
   if (absMs < 100) return "#fbbf24";
   return "#f87171";
 }

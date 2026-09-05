@@ -5,16 +5,20 @@ import {
   VolumeX,
   Eye,
   EyeOff,
+  RotateCcw,
   Music2,
   AudioWaveform,
   Guitar,
   Gauge,
   Music,
+  Palette,
+  Type,
   Timer,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
+import type { ScoreAppearance } from "@/features/library/data/songStore";
 import {
   SPEED_PERCENT_MIN,
   SPEED_PERCENT_STEP,
@@ -46,6 +50,9 @@ interface MixerProps {
   tabOnly: boolean;
   onTabOnlyToggle: () => void;
   tabOnlyDisabled?: boolean;
+  scoreAppearance: ScoreAppearance;
+  onScoreAppearance: (appearance: ScoreAppearance) => void;
+  onScoreAppearanceReset: () => void;
   /** A bar of metronome clicks before playback starts. */
   countIn: boolean;
   onCountInToggle: () => void;
@@ -96,8 +103,76 @@ function VolumeSlider({
       value={value}
       aria-label={ariaLabel}
       onChange={(e) => onChange(Number(e.target.value))}
-      className="h-1 w-full cursor-pointer accent-accent"
+      className="h-0.5 w-full cursor-pointer"
     />
+  );
+}
+
+function SettingSlider({
+  label,
+  value,
+  min,
+  max,
+  step,
+  unit,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  unit?: string;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <label className="flex flex-col gap-1.5 rounded-sm border border-rule bg-paper px-3 py-2.5">
+      <span className="flex items-center gap-2">
+        <span className="flex-1 text-xs font-medium text-ink">{label}</span>
+        <span className="text-xs tabular-nums text-ink-muted">
+          {value}
+          {unit}
+        </span>
+      </span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        aria-label={label}
+        className="h-0.5 w-full cursor-pointer"
+      />
+    </label>
+  );
+}
+
+function ColorField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <label className="flex items-center gap-2 rounded-sm border border-rule bg-paper px-3 py-2.5">
+      <input
+        type="color"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label={label}
+        className="h-6 w-6 shrink-0 cursor-pointer rounded-sm border border-rule bg-transparent p-0"
+      />
+      <span className="min-w-0 flex-1 text-xs font-medium text-ink">
+        {label}
+      </span>
+      <span className="font-mono text-[9.5px] uppercase tracking-label text-ink-faint">
+        {value}
+      </span>
+    </label>
   );
 }
 
@@ -131,7 +206,7 @@ function ChannelRow({
   onShow?: () => void;
 }) {
   return (
-    <div className="flex flex-col gap-1.5 rounded-md bg-surface-overlay px-3 py-2.5">
+    <div className="flex flex-col gap-1.5 rounded-sm border border-rule bg-paper px-3 py-2.5">
       <div className="flex items-center gap-2">
         {onShow ? (
           <button
@@ -172,8 +247,8 @@ function ChannelRow({
             className={cn(
               "grid h-5 w-5 place-items-center rounded text-[10px] font-bold transition-colors",
               soloed
-                ? "bg-accent text-surface"
-                : "bg-surface text-zinc-400 hover:text-zinc-200",
+                ? "bg-ink text-paper"
+                : "border border-rule text-ink-muted hover:text-ink",
             )}
           >
             S
@@ -188,7 +263,7 @@ function ChannelRow({
             aria-pressed={muted}
             className={cn(
               "shrink-0 transition-colors",
-              muted ? "text-red-400" : "text-zinc-400 hover:text-zinc-200",
+              muted ? "text-accent" : "text-ink-muted hover:text-ink",
             )}
           >
             {muted ? (
@@ -225,7 +300,10 @@ function AudioEngineNote() {
   const state = useAudioContextState();
   if (state === "running") return null;
   return (
-    <p className="px-1 text-[11px] leading-snug text-amber-400/90" role="status">
+    <p
+      className="px-1 font-display text-[13px] italic leading-snug text-accent"
+      role="status"
+    >
       {state === "interrupted"
         ? "Audio was interrupted by the system — press play to start it again."
         : "Audio hasn't started yet — press play to wake it up."}
@@ -257,7 +335,7 @@ function ToggleRow({
       onClick={onToggle}
       disabled={disabled}
       aria-pressed={on}
-      className="flex items-center gap-2 rounded-md bg-surface-overlay px-3 py-2.5 text-left disabled:opacity-50"
+      className="flex items-center gap-2 rounded-sm border border-rule bg-paper px-3 py-2.5 text-left disabled:opacity-50"
     >
       {icon}
       <span className="flex-1">
@@ -291,6 +369,9 @@ export function Mixer({
   tabOnly,
   onTabOnlyToggle,
   tabOnlyDisabled,
+  scoreAppearance,
+  onScoreAppearance,
+  onScoreAppearanceReset,
   countIn,
   onCountInToggle,
   countInDisabled,
@@ -324,9 +405,11 @@ export function Mixer({
         onClick={onClose}
         aria-hidden
       />
-      <aside className="fixed inset-x-0 bottom-0 z-40 flex max-h-[80dvh] flex-col gap-3 rounded-t-2xl border-t border-white/10 bg-surface-raised p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-2xl md:inset-x-auto md:right-0 md:top-0 md:h-dvh md:max-h-none md:w-72 md:rounded-none md:border-l md:border-t-0 md:pb-3">
+      <aside className="fixed inset-x-0 bottom-0 z-40 flex max-h-[80dvh] flex-col gap-3 rounded-t-sm border-t border-rule bg-paper-raised p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:inset-x-auto md:right-0 md:top-0 md:h-dvh md:max-h-none md:w-72 md:rounded-none md:border-l md:border-t-0 md:pb-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-zinc-200">Mixer</h2>
+          <h2 className="font-mono text-[9.5px] uppercase tracking-label text-ink-muted">
+            Mixer
+          </h2>
           <Button
             variant="ghost"
             size="icon"
@@ -339,10 +422,10 @@ export function Mixer({
 
         <div className="flex flex-1 flex-col gap-3 overflow-y-auto">
           <div className="flex flex-col gap-2">
-            <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+            <p className="px-1 font-mono text-[9.5px] uppercase tracking-label text-ink-faint">
               Playback
             </p>
-            <div className="flex flex-col gap-1.5 rounded-md bg-surface-overlay px-3 py-2.5">
+            <div className="flex flex-col gap-1.5 rounded-sm border border-rule bg-paper px-3 py-2.5">
               <div className="flex items-center gap-2">
                 <Gauge className="h-4 w-4 shrink-0 text-zinc-400" />
                 <span className="flex-1 text-xs font-medium text-zinc-200">
@@ -362,7 +445,7 @@ export function Mixer({
                 onChange={(e) => onSpeedPercent(Number(e.target.value))}
                 aria-label="Playback speed"
                 aria-valuetext={`${speedPercent}%`}
-                className="h-1.5 w-full cursor-pointer accent-accent disabled:cursor-not-allowed disabled:opacity-50"
+                className="h-0.5 w-full cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
               />
             </div>
             <ToggleRow
@@ -382,9 +465,130 @@ export function Mixer({
             />
           </div>
 
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between px-1">
+              <p className="font-mono text-[9.5px] uppercase tracking-label text-ink-faint">
+                Score
+              </p>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Reset score appearance"
+                onClick={onScoreAppearanceReset}
+                className="h-6 w-6"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+            <div className="flex items-center gap-2 rounded-sm border border-rule bg-paper px-3 py-2.5">
+              <Palette className="h-4 w-4 shrink-0 text-ink-muted" />
+              <span className="text-xs font-medium text-ink">Appearance</span>
+            </div>
+            <SettingSlider
+              label="Zoom"
+              min={0.75}
+              max={2}
+              step={0.05}
+              value={scoreAppearance.scale}
+              unit="x"
+              onChange={(scale) =>
+                onScoreAppearance({ ...scoreAppearance, scale })
+              }
+            />
+            <SettingSlider
+              label="Spacing"
+              min={0.35}
+              max={2}
+              step={0.05}
+              value={scoreAppearance.stretch}
+              unit="x"
+              onChange={(stretch) =>
+                onScoreAppearance({ ...scoreAppearance, stretch })
+              }
+            />
+            <div className="flex items-center gap-2 rounded-sm border border-rule bg-paper px-3 py-2.5">
+              <Type className="h-4 w-4 shrink-0 text-ink-muted" />
+              <span className="text-xs font-medium text-ink">
+                Tablature numbers
+              </span>
+            </div>
+            <SettingSlider
+              label="Tab number size"
+              min={10}
+              max={22}
+              step={1}
+              value={scoreAppearance.tabNumberSize}
+              unit="px"
+              onChange={(tabNumberSize) =>
+                onScoreAppearance({ ...scoreAppearance, tabNumberSize })
+              }
+            />
+            <SettingSlider
+              label="Bar number size"
+              min={9}
+              max={18}
+              step={1}
+              value={scoreAppearance.barNumberSize}
+              unit="px"
+              onChange={(barNumberSize) =>
+                onScoreAppearance({ ...scoreAppearance, barNumberSize })
+              }
+            />
+            <label className="flex items-center gap-2 rounded-sm border border-rule bg-paper px-3 py-2.5">
+              <span className="min-w-0 flex-1 text-xs font-medium text-ink">
+                Number font
+              </span>
+              <select
+                value={scoreAppearance.numberFontFamily}
+                onChange={(e) =>
+                  onScoreAppearance({
+                    ...scoreAppearance,
+                    numberFontFamily: e.target.value,
+                  })
+                }
+                aria-label="Number font"
+                className="h-7 rounded-sm border border-rule bg-paper px-2 text-xs text-ink"
+              >
+                <option value="Arial">Arial</option>
+                <option value="IBM Plex Mono">IBM Plex Mono</option>
+                <option value="Serif">Serif</option>
+                <option value="Georgia">Georgia</option>
+                <option value="Verdana">Verdana</option>
+              </select>
+            </label>
+            <ColorField
+              label="Sheet"
+              value={scoreAppearance.sheetColor}
+              onChange={(sheetColor) =>
+                onScoreAppearance({ ...scoreAppearance, sheetColor })
+              }
+            />
+            <ColorField
+              label="Ink"
+              value={scoreAppearance.inkColor}
+              onChange={(inkColor) =>
+                onScoreAppearance({ ...scoreAppearance, inkColor })
+              }
+            />
+            <ColorField
+              label="Staff lines"
+              value={scoreAppearance.staffLineColor}
+              onChange={(staffLineColor) =>
+                onScoreAppearance({ ...scoreAppearance, staffLineColor })
+              }
+            />
+            <ColorField
+              label="Bar numbers"
+              value={scoreAppearance.barNumberColor}
+              onChange={(barNumberColor) =>
+                onScoreAppearance({ ...scoreAppearance, barNumberColor })
+              }
+            />
+          </div>
+
           {(hasBacking || hasSynth) && (
             <div className="flex flex-col gap-2">
-              <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+              <p className="px-1 font-mono text-[9.5px] uppercase tracking-label text-ink-faint">
                 Mix
               </p>
               {hasBacking && (
@@ -415,7 +619,7 @@ export function Mixer({
               )}
               <AudioEngineNote />
               {hasBacking && (
-                <div className="rounded-md bg-surface-overlay px-3 py-2.5">
+                <div className="rounded-sm border border-rule bg-paper px-3 py-2.5">
                   <AudioOffsetControl
                     offsetMs={offsetMs}
                     onChange={onOffsetChange}
@@ -429,7 +633,7 @@ export function Mixer({
           )}
 
           <div className="flex flex-col gap-2">
-            <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+            <p className="px-1 font-mono text-[9.5px] uppercase tracking-label text-ink-faint">
               Instruments
             </p>
             {tracks.map((t) => (
@@ -442,7 +646,7 @@ export function Mixer({
                 onShow={() => onShowTrack(t.index)}
               />
             ))}
-            <p className="px-1 text-[11px] leading-snug text-zinc-500">
+            <p className="px-1 font-display text-[13px] italic leading-snug text-ink-muted">
               The eye picks which part is shown in the tab — and which part the
               synth plays. Level for it is under <em>Mix</em> above.
             </p>

@@ -212,15 +212,15 @@ function DropZone({
         accept_(e.dataTransfer.files);
       }}
       className={cn(
-        "flex flex-col items-center gap-2 rounded-xl border border-dashed border-white/15 px-6 py-8 text-center transition-colors",
-        needed && !files.length && "border-amber-400/50 bg-amber-400/5",
+        "flex flex-col items-center gap-2 rounded-sm border border-dashed border-rule px-6 py-8 text-center transition-colors",
+        needed && !files.length && "border-accent/50 bg-accent-wash",
         files.length && "border-accent/40",
         dragging && "border-accent/70 bg-accent/5",
       )}
     >
       <div className="text-zinc-400">{icon}</div>
       <p className="text-base font-medium text-zinc-200">{title}</p>
-      <p className={cn("text-xs text-zinc-500", needed && !files.length && "text-amber-400/90")}>
+      <p className={cn("text-xs text-zinc-500", needed && !files.length && "text-accent")}>
         {needed && !files.length ? "Required to finish" : hint}
       </p>
 
@@ -720,7 +720,7 @@ export function ImportSongDialog() {
           />
         </div>
 
-        <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-surface-overlay/40 p-4">
+        <div className="flex flex-col gap-3 rounded-sm border border-rule bg-paper-raised p-4">
           <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-2">
               <Guitar className="h-4 w-4 shrink-0 text-emerald-400" />
@@ -770,7 +770,7 @@ export function ImportSongDialog() {
           </div>
 
           {songsterrError && (
-            <p className="text-sm text-red-400" role="alert">
+            <p className="text-sm text-accent" role="alert">
               {songsterrError}
             </p>
           )}
@@ -784,7 +784,7 @@ export function ImportSongDialog() {
                     key={result.songId}
                     type="button"
                     onClick={() => void handleSongsterrPick(result)}
-                    className="w-full rounded-md border border-white/10 bg-surface-raised/70 p-2 text-left transition-colors hover:border-accent/40"
+                    className="w-full rounded-sm border border-rule bg-paper p-2 text-left transition-colors hover:border-accent"
                   >
                     <p className="truncate text-sm font-medium text-zinc-100">
                       {result.title}
@@ -800,7 +800,7 @@ export function ImportSongDialog() {
           )}
 
           {songsterrSong && (
-            <div className="flex flex-col gap-2 rounded-md border border-white/10 bg-surface-raised/70 p-3">
+            <div className="flex flex-col gap-2 rounded-sm border border-rule bg-paper p-3">
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-zinc-100">
                   {songsterrSong.title}
@@ -854,7 +854,7 @@ export function ImportSongDialog() {
 
               {tabError && (
                 <div className="flex flex-col gap-2">
-                  <p className="text-sm text-red-400" role="alert">
+                  <p className="text-sm text-accent" role="alert">
                     {tabError}
                   </p>
                   <Button
@@ -880,10 +880,10 @@ export function ImportSongDialog() {
           )}
         </div>
 
-        <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-surface-overlay/40 p-4">
+        <div className="flex flex-col gap-3 rounded-sm border border-rule bg-paper-raised p-4">
           <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-2">
-              <Youtube className="h-4 w-4 shrink-0 text-red-400" />
+              <Youtube className="h-4 w-4 shrink-0 text-accent" />
               <p className="truncate text-sm font-medium text-zinc-200">
                 Search YouTube
               </p>
@@ -930,7 +930,7 @@ export function ImportSongDialog() {
           </div>
 
           {youtubeError && (
-            <p className="text-sm text-red-400" role="alert">
+            <p className="text-sm text-accent" role="alert">
               {youtubeError}
             </p>
           )}
@@ -945,7 +945,7 @@ export function ImportSongDialog() {
                     type="button"
                     onClick={() => void handleYoutubeSelect(result)}
                     className={cn(
-                      "grid w-full grid-cols-[72px_minmax(0,1fr)_24px] items-center gap-3 rounded-md border border-white/10 bg-surface-raised/70 p-2 text-left transition-colors hover:border-accent/40",
+                      "grid w-full grid-cols-[72px_minmax(0,1fr)_24px] items-center gap-3 rounded-sm border border-rule bg-paper p-2 text-left transition-colors hover:border-accent",
                       selected && "border-accent/60 bg-accent/10",
                     )}
                   >
@@ -998,7 +998,7 @@ export function ImportSongDialog() {
         </div>
 
         {error && (
-          <p className="text-sm text-red-400" role="alert">
+          <p className="text-sm text-accent" role="alert">
             {error}
           </p>
         )}

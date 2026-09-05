@@ -3,25 +3,26 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/cn";
 
 /**
- * shadcn/ui-style button. Styled with the app's `surface`/`accent` theme tokens
- * rather than the stock shadcn CSS variables.
+ * Buttons in the "Score" identity are keys on a plate: 2px radius, hairline
+ * rules instead of fills, and a Plex Mono label in uppercase. `default` is the
+ * inked primary; `ghost` and `outline` are the transport keys.
  */
 export const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:pointer-events-none disabled:opacity-50",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-sm font-mono text-[11px] font-semibold uppercase tracking-button transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:pointer-events-none disabled:opacity-45",
   {
     variants: {
       variant: {
-        default: "bg-accent text-surface hover:bg-accent-muted",
-        ghost:
-          "bg-transparent text-zinc-300 hover:bg-surface-overlay hover:text-zinc-100",
+        default:
+          "border border-ink bg-ink text-paper hover:border-ink-muted hover:bg-ink-muted",
+        ghost: "bg-transparent text-ink hover:bg-[var(--wash)]",
         outline:
-          "border border-white/10 bg-transparent text-zinc-200 hover:bg-surface-overlay",
+          "border border-rule bg-transparent text-ink hover:bg-[var(--wash)]",
       },
       size: {
-        default: "h-9 px-3 py-1.5",
-        sm: "h-8 px-2.5",
+        default: "h-9 px-4",
+        sm: "h-8 px-3",
         lg: "h-10 px-5",
-        icon: "h-9 w-9",
+        icon: "h-[30px] w-[30px] px-0",
       },
     },
     defaultVariants: {
@@ -45,3 +46,9 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
   ),
 );
 Button.displayName = "Button";
+
+/**
+ * An engaged transport toggle (loop on, metronome on, mixer open) inverts to
+ * ink — a colour tint alone isn't enough signal at this weight.
+ */
+export const engagedKey = "border-ink bg-ink text-paper hover:bg-ink";

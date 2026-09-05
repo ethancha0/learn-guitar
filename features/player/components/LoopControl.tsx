@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Repeat, X } from "lucide-react";
-import { Button } from "@/components/ui/Button";
+import { Button, engagedKey } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
 import type { BarRange } from "@/features/player/data/loopRange";
 
@@ -39,7 +39,7 @@ export function LoopControl({
   return (
     <div className="flex shrink-0 items-center gap-1">
       <Button
-        variant="ghost"
+        variant="outline"
         size="icon"
         aria-label={
           range
@@ -50,8 +50,8 @@ export function LoopControl({
         aria-pressed={looping}
         disabled={disabled}
         className={cn(
-          "h-10 w-10 shrink-0 md:h-9 md:w-9",
-          looping && "text-accent",
+          "h-10 w-10 shrink-0 md:h-[30px] md:w-[30px]",
+          looping && engagedKey,
         )}
         onClick={onToggle}
       >
@@ -59,7 +59,7 @@ export function LoopControl({
       </Button>
 
       {range && (
-        <div className="flex items-center gap-1 rounded-md bg-surface-overlay px-1.5 py-1 text-xs text-zinc-400">
+        <div className="flex items-center gap-1 rounded-sm border border-rule px-1.5 py-1 font-mono text-xs text-ink-muted">
           <BarInput
             label="Loop start bar"
             value={range.startBar}
@@ -80,7 +80,7 @@ export function LoopControl({
             aria-label="Clear loop section"
             title="Clear loop section"
             onClick={onClear}
-            className="ml-0.5 rounded p-0.5 text-zinc-500 hover:bg-white/10 hover:text-zinc-200"
+            className="ml-0.5 rounded-sm p-0.5 text-ink-faint hover:bg-[var(--wash)] hover:text-ink"
           >
             <X className="h-3.5 w-3.5" />
           </button>
@@ -135,7 +135,7 @@ function BarInput({
       onKeyDown={(e) => {
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
       }}
-      className="w-8 bg-transparent text-center tabular-nums text-zinc-100 outline-none [appearance:textfield] focus:text-accent [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+      className="w-8 bg-transparent text-center font-mono tabular-nums text-ink outline-none [appearance:textfield] focus:text-accent [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
     />
   );
 }

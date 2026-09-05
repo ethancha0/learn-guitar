@@ -11,7 +11,7 @@ import {
   Music,
   Timer,
 } from "lucide-react";
-import { Button } from "@/components/ui/Button";
+import { Button, engagedKey } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
 import { cn } from "@/lib/cn";
 import { useIsMobile } from "@/lib/useMediaQuery";
@@ -22,6 +22,10 @@ import {
   getTabOnly,
   getStoredTabOnly,
   setTabOnly,
+  DEFAULT_SCORE_APPEARANCE,
+  getScoreAppearance,
+  sanitizeScoreAppearance,
+  setScoreAppearance,
   getCountIn,
   setCountIn,
   AUDIO_SYNC_KEY,
@@ -29,6 +33,7 @@ import {
   getAudioSync,
   patchAudioSync,
   type AudioSyncSettings,
+  type ScoreAppearance,
   type StoredSyncMap,
 } from "@/features/library/data/songStore";
 import { getBackingAudio } from "@/features/player/data/audioStore";
@@ -160,7 +165,7 @@ function LoadingScoreOverlay({
 }) {
   return (
     <div
-      className="absolute inset-0 z-10 flex items-center justify-center overflow-hidden bg-[#111315] px-6 text-zinc-100"
+      className="absolute inset-0 z-10 flex items-center justify-center overflow-hidden bg-paper-raised px-6 text-ink"
       role={error ? "alert" : "status"}
       aria-live="polite"
     >
@@ -186,8 +191,14 @@ function LoadingScoreOverlay({
           </div>
         </div>
         <div className="space-y-1.5">
-          <p className="text-sm font-medium text-zinc-100">{title}</p>
-          {detail && <p className="text-xs text-zinc-400">{detail}</p>}
+          <p className="font-mono text-[9.5px] uppercase tracking-label text-ink">
+            {title}
+          </p>
+          {detail && (
+            <p className="font-display text-[15px] italic text-ink-muted">
+              {detail}
+            </p>
+          )}
         </div>
       </div>
     </div>
@@ -199,6 +210,19 @@ interface AlphaTabPlayerProps {
   songId: string;
   /** Base64-encoded Guitar Pro / PowerTab file bytes. */
   tabData: string;
+  /**
+   * Reports score metadata the masthead shows (tuning, metre). Only alphaTab
+   * knows these, and they arrive asynchronously as the score loads.
+   */
+  onScoreMeta?: (meta: ScoreMeta) => void;
+}
+
+/** Metadata the player lifts out of the loaded score for the page masthead. */
+export interface ScoreMeta {
+  /** Space-separated open strings, low to high, e.g. `E A D G`. */
+  tuning?: string;
+  /** Time signature of the opening bar, e.g. `4/4`. */
+  metre?: string;
 }
 
 /**
@@ -208,7 +232,16 @@ interface AlphaTabPlayerProps {
  * shown), a per-song alignment offset (Auto-align + nudge), and a prominent
  * recording-volume control. alphaTab's synthesizer is silent in this mode.
  */
-export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
+export function AlphaTabPlayer({
+  songId,
+  tabData,
+  onScoreMeta,
+}: AlphaTabPlayerProps) {
+  // Held in a ref so a new callback identity from the parent can't restart the
+  // alphaTab setup effect.
+  const onScoreMetaRef = useRef(onScoreMeta);
+  onScoreMetaRef.current = onScoreMeta;
+
   const hostRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const backingAudioRef = useRef<HTMLAudioElement>(null);
@@ -265,7 +298,20 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   const isMobile = useIsMobile();
   // What the renderer is currently configured with, so screen-size changes
   // don't trigger a re-render of the whole sheet on every unrelated state pass.
-  const appliedDisplayRef = useRef({ tabOnly: false, scale: 1, stretch: 1 });
+  const appliedDisplayRef = useRef({
+    tabOnly: false,
+    scale: 1,
+    stretch: 1,
+    tabNumberSize: DEFAULT_SCORE_APPEARANCE.tabNumberSize,
+    barNumberSize: DEFAULT_SCORE_APPEARANCE.barNumberSize,
+    numberFontFamily: DEFAULT_SCORE_APPEARANCE.numberFontFamily,
+    inkColor: DEFAULT_SCORE_APPEARANCE.inkColor,
+    staffLineColor: DEFAULT_SCORE_APPEARANCE.staffLineColor,
+    barNumberColor: DEFAULT_SCORE_APPEARANCE.barNumberColor,
+  });
+  const [scoreAppearance, setScoreAppearanceState] = useState<ScoreAppearance>(
+    DEFAULT_SCORE_APPEARANCE,
+  );
 
   // Recording + calibration state
   const [mixerOpen, setMixerOpen] = useState(false);
@@ -396,14 +442,14 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
 
     const staff = track.staves?.[0];
     const midi: number[] = staff?.tuning ?? [];
-    setTuning(
-      midi.length
-        ? [...midi]
-            .reverse()
-            .map((m) => NOTE_NAMES[((m % 12) + 12) % 12])
-            .join(" ")
-        : "",
-    );
+    const nextTuning = midi.length
+      ? [...midi]
+          .reverse()
+          .map((m) => NOTE_NAMES[((m % 12) + 12) % 12])
+          .join(" ")
+      : "";
+    setTuning(nextTuning);
+    onScoreMetaRef.current?.({ tuning: nextTuning || undefined });
   }, []);
 
   const syncSynthPlayback = useCallback((forcePlaying = false) => {
@@ -479,10 +525,18 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
           },
         });
         apiRef.current = api;
+        const storedAppearance = getScoreAppearance();
+        setScoreAppearanceState(storedAppearance);
         appliedDisplayRef.current = {
           tabOnly: getTabOnly(),
-          scale: 1,
-          stretch: 1,
+          scale: 0,
+          stretch: 0,
+          tabNumberSize: 0,
+          barNumberSize: 0,
+          numberFontFamily: "",
+          inkColor: "",
+          staffLineColor: "",
+          barNumberColor: "",
         };
         if (process.env.NODE_ENV !== "production") {
           // Debug handle for manual sync inspection in the browser console.
@@ -556,6 +610,15 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
             })),
           );
 
+          // Metre is read off the opening bar; a score with none reports
+          // nothing and the masthead shows an em dash.
+          const firstBar = score.masterBars?.[0];
+          const num = firstBar?.timeSignatureNumerator;
+          const den = firstBar?.timeSignatureDenominator;
+          if (num && den) {
+            onScoreMetaRef.current?.({ metre: `${num}/${den}` });
+          }
+
           const stored = getPreferredTrackIndex(songId);
           const initial =
             stored !== undefined && stored >= 0 && stored < scoreTracks.length
@@ -596,7 +659,21 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
   /** Push notation size + stave profile into alphaTab, re-rendering only on a
    *  real change (each render redraws the whole sheet). */
   const applyDisplay = useCallback(
-    (next: { tabOnly: boolean; scale: number; stretch: number }) => {
+    (
+      next: {
+        tabOnly: boolean;
+        scale: number;
+        stretch: number;
+      } & Pick<
+        ScoreAppearance,
+        | "tabNumberSize"
+        | "barNumberSize"
+        | "numberFontFamily"
+        | "inkColor"
+        | "staffLineColor"
+        | "barNumberColor"
+      >,
+    ) => {
       const api = apiRef.current;
       const alphaTab = alphaTabRef.current;
       if (!api || !alphaTab) return;
@@ -604,7 +681,13 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
       if (
         applied.tabOnly === next.tabOnly &&
         applied.scale === next.scale &&
-        applied.stretch === next.stretch
+        applied.stretch === next.stretch &&
+        applied.tabNumberSize === next.tabNumberSize &&
+        applied.barNumberSize === next.barNumberSize &&
+        applied.numberFontFamily === next.numberFontFamily &&
+        applied.inkColor === next.inkColor &&
+        applied.staffLineColor === next.staffLineColor &&
+        applied.barNumberColor === next.barNumberColor
       )
         return;
       appliedDisplayRef.current = next;
@@ -613,6 +696,23 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
         : alphaTab.StaveProfile.Default;
       api.settings.display.scale = next.scale;
       api.settings.display.stretchForce = next.stretch;
+      const resources = api.settings.display.resources;
+      resources.tablatureFont = new alphaTab.model.Font(
+        next.numberFontFamily,
+        next.tabNumberSize,
+      );
+      resources.barNumberFont = new alphaTab.model.Font(
+        next.numberFontFamily,
+        next.barNumberSize,
+      );
+      resources.mainGlyphColor = alphaTab.model.Color.fromJson(next.inkColor);
+      resources.scoreInfoColor = alphaTab.model.Color.fromJson(next.inkColor);
+      resources.staffLineColor = alphaTab.model.Color.fromJson(
+        next.staffLineColor,
+      );
+      resources.barNumberColor = alphaTab.model.Color.fromJson(
+        next.barNumberColor,
+      );
       api.updateSettings();
       api.render();
     },
@@ -628,10 +728,28 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     setTabOnlyState(nextTabOnly);
     applyDisplay({
       tabOnly: nextTabOnly,
-      scale: isMobile ? MOBILE_NOTATION_SCALE : 1,
-      stretch: isMobile ? MOBILE_STRETCH_FORCE : 1,
+      scale:
+        scoreAppearance.scale * (isMobile ? MOBILE_NOTATION_SCALE : 1),
+      stretch:
+        scoreAppearance.stretch * (isMobile ? MOBILE_STRETCH_FORCE : 1),
+      tabNumberSize: scoreAppearance.tabNumberSize,
+      barNumberSize: scoreAppearance.barNumberSize,
+      numberFontFamily: scoreAppearance.numberFontFamily,
+      inkColor: scoreAppearance.inkColor,
+      staffLineColor: scoreAppearance.staffLineColor,
+      barNumberColor: scoreAppearance.barNumberColor,
     });
-  }, [isMobile, status, applyDisplay]);
+  }, [isMobile, status, scoreAppearance, applyDisplay]);
+
+  function updateScoreAppearance(next: ScoreAppearance) {
+    const sanitized = sanitizeScoreAppearance(next);
+    setScoreAppearanceState(sanitized);
+    setScoreAppearance(sanitized);
+  }
+
+  function resetScoreAppearance() {
+    updateScoreAppearance(DEFAULT_SCORE_APPEARANCE);
+  }
 
   function toggleTabOnly() {
     const next = !tabOnly;
@@ -641,6 +759,12 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
       tabOnly: next,
       scale: appliedDisplayRef.current.scale,
       stretch: appliedDisplayRef.current.stretch,
+      tabNumberSize: scoreAppearance.tabNumberSize,
+      barNumberSize: scoreAppearance.barNumberSize,
+      numberFontFamily: scoreAppearance.numberFontFamily,
+      inkColor: scoreAppearance.inkColor,
+      staffLineColor: scoreAppearance.staffLineColor,
+      barNumberColor: scoreAppearance.barNumberColor,
     });
   }
 
@@ -1381,184 +1505,198 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
     <div className="flex min-h-0 flex-1 flex-col gap-2 md:gap-3">
       {/* On phones the bar drops below the score (`order-2`) so the controls
           sit under the thumb and the tab gets the top of the screen. */}
-      <div className="order-2 flex flex-col gap-2 rounded-lg border border-white/5 bg-surface-raised px-2 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:order-none md:flex-row md:flex-wrap md:items-center md:gap-3 md:px-4 md:py-3">
-        {/* `md:contents` dissolves this phone-only row on desktop, so the
-            toolbar stays one flowing line there. */}
-        <div className="flex items-center gap-2 md:contents">
-          <Button
-            size="icon"
-            aria-label={
-              countingIn ? "Cancel count-in" : playing ? "Pause" : "Play"
-            }
-            disabled={controlsDisabled}
-            onClick={togglePlay}
-            className="h-12 w-12 shrink-0 md:h-9 md:w-9"
-          >
-            {/* Playback is armed during the count-in, so the button reads as
-                "stop what's happening" rather than offering to start again. */}
-            {playing || countingIn ? (
-              <Pause className="h-5 w-5 md:h-4 md:w-4" />
-            ) : (
-              <Play className="h-5 w-5 md:h-4 md:w-4" />
-            )}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="Stop"
-            disabled={controlsDisabled}
-            onClick={stop}
-            className="hidden md:inline-flex"
-          >
-            <Square className="h-4 w-4" />
-          </Button>
-
-          {trackNames.length > 0 && (
-            <label className="flex min-w-0 flex-1 items-center gap-1.5 text-xs text-zinc-400 md:flex-none">
-              <Select
-                aria-label="Instrument"
-                value={selectedTrack}
-                onChange={(e) => selectTrack(Number(e.target.value))}
-                className="h-10 w-full min-w-0 md:h-8 md:w-auto md:max-w-[13rem]"
-              >
-                {trackNames.map((name, i) => (
-                  <option key={i} value={i}>
-                    {name}
-                  </option>
-                ))}
-              </Select>
-              {tuning && (
-                <span className="hidden text-[11px] text-zinc-500 lg:inline">
-                  {tuning}
-                </span>
+      <div className="order-2 flex flex-col rounded-sm border border-rule-strong bg-paper-raised md:order-none">
+        {/* Row one: transport, instrument, position and speed. */}
+        <div className="flex flex-col gap-2 px-3 py-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] md:flex-row md:flex-wrap md:items-center md:gap-2.5 md:border-b md:border-rule md:pb-2.5">
+          {/* `md:contents` dissolves this phone-only row on desktop, so the
+              toolbar stays one flowing line there. */}
+          <div className="flex items-center gap-2 md:contents">
+            <Button
+              size="icon"
+              aria-label={
+                countingIn ? "Cancel count-in" : playing ? "Pause" : "Play"
+              }
+              disabled={controlsDisabled}
+              onClick={togglePlay}
+              className="h-12 w-12 shrink-0 md:h-8 md:w-8"
+            >
+              {/* Playback is armed during the count-in, so the button reads as
+                  "stop what's happening" rather than offering to start again. */}
+              {playing || countingIn ? (
+                <Pause className="h-5 w-5 md:h-4 md:w-4" />
+              ) : (
+                <Play className="h-5 w-5 md:h-4 md:w-4" />
               )}
-            </label>
-          )}
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="Stop"
+              disabled={controlsDisabled}
+              onClick={stop}
+              className="hidden md:inline-flex"
+            >
+              <Square className="h-4 w-4" />
+            </Button>
 
-          {/* Phone speed readout — the slider itself lives in the sheet. */}
-          <Button
-            variant="outline"
-            size="sm"
-            aria-label="Playback speed"
-            onClick={() => setMixerOpen(true)}
-            className="h-10 shrink-0 tabular-nums md:hidden"
-          >
-            {speedToPercent(speed)}%
-          </Button>
-
-          <LoopControl
-            looping={looping}
-            onToggle={toggleLoop}
-            range={loopRange}
-            onRangeChange={applyLoopRange}
-            onClear={clearLoopRange}
-            firstBar={barTicks[0]?.barNumber ?? 1}
-            lastBar={barTicks[barTicks.length - 1]?.barNumber ?? 1}
-            disabled={controlsDisabled || barTicks.length === 0}
-          />
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="Count-in before playing"
-            title="Count-in before playing"
-            aria-pressed={countInEnabled}
-            disabled={controlsDisabled}
-            className={cn(
-              "h-10 w-10 shrink-0 md:h-9 md:w-9",
-              countInEnabled && "text-accent",
+            {trackNames.length > 0 && (
+              <label className="flex min-w-0 flex-1 items-center gap-2 md:flex-none">
+                <Select
+                  aria-label="Instrument"
+                  value={selectedTrack}
+                  onChange={(e) => selectTrack(Number(e.target.value))}
+                  className="h-10 w-full min-w-0 md:h-8 md:w-auto md:max-w-[13rem]"
+                >
+                  {trackNames.map((name, i) => (
+                    <option key={i} value={i}>
+                      {name}
+                    </option>
+                  ))}
+                </Select>
+                {tuning && (
+                  <span className="hidden font-mono text-[9.5px] uppercase tracking-label text-ink-faint lg:inline">
+                    {tuning}
+                  </span>
+                )}
+              </label>
             )}
-            onClick={toggleCountIn}
-          >
-            <Timer className="h-5 w-5 md:h-4 md:w-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="Tab only (hide standard notation)"
-            title="Tab only (hide standard notation)"
-            aria-pressed={tabOnly}
-            disabled={status !== "ready"}
-            className={cn("hidden md:inline-flex", tabOnly && "text-accent")}
-            onClick={toggleTabOnly}
-          >
-            <Music className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="Toggle mixer"
-            aria-pressed={mixerOpen}
-            className={cn(
-              "h-10 w-10 shrink-0 md:h-9 md:w-9",
-              mixerOpen && "text-accent",
-            )}
-            onClick={() => setMixerOpen((o) => !o)}
-          >
-            <SlidersHorizontal className="h-5 w-5 md:h-4 md:w-4" />
-          </Button>
-        </div>
 
-        {/* Scrubber above the buttons on a phone: it reads as a continuation
-            of the score, and keeps the tappable row at the bottom edge. */}
-        <div className="order-first flex items-center gap-2 text-xs text-zinc-400 md:order-none md:min-w-[12rem] md:flex-1 md:gap-3">
-          <span className="tabular-nums">{formatMs(positionMs)}</span>
-          <input
-            type="range"
-            min={0}
-            max={durationMs || 1}
-            value={Math.min(positionMs, durationMs || 1)}
-            disabled={controlsDisabled || durationMs === 0}
-            onMouseDown={() => setScrubbing(true)}
-            onTouchStart={() => setScrubbing(true)}
-            onChange={(e) => setPositionMs(Number(e.target.value))}
-            onMouseUp={(e) => {
-              setScrubbing(false);
-              if (apiRef.current) {
-                apiRef.current.timePosition = Number(
-                  (e.target as HTMLInputElement).value,
-                );
+            {/* Phone speed readout — the slider itself lives in the sheet. */}
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label="Playback speed"
+              onClick={() => setMixerOpen(true)}
+              className="h-10 shrink-0 tabular-nums md:hidden"
+            >
+              {speedToPercent(speed)}%
+            </Button>
+
+            <LoopControl
+              looping={looping}
+              onToggle={toggleLoop}
+              range={loopRange}
+              onRangeChange={applyLoopRange}
+              onClear={clearLoopRange}
+              firstBar={barTicks[0]?.barNumber ?? 1}
+              lastBar={barTicks[barTicks.length - 1]?.barNumber ?? 1}
+              disabled={controlsDisabled || barTicks.length === 0}
+            />
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="Count-in before playing"
+              title="Count-in before playing"
+              aria-pressed={countInEnabled}
+              disabled={controlsDisabled}
+              className={cn(
+                "h-10 w-10 shrink-0 md:h-[30px] md:w-[30px]",
+                countInEnabled && engagedKey,
+              )}
+              onClick={toggleCountIn}
+            >
+              <Timer className="h-5 w-5 md:h-4 md:w-4" />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="Tab only (hide standard notation)"
+              title="Tab only (hide standard notation)"
+              aria-pressed={tabOnly}
+              disabled={status !== "ready"}
+              className={cn("hidden md:inline-flex", tabOnly && engagedKey)}
+              onClick={toggleTabOnly}
+            >
+              <Music className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="Toggle mixer"
+              aria-pressed={mixerOpen}
+              className={cn(
+                "h-10 w-10 shrink-0 md:h-[30px] md:w-[30px]",
+                mixerOpen && engagedKey,
+              )}
+              onClick={() => setMixerOpen((o) => !o)}
+            >
+              <SlidersHorizontal className="h-5 w-5 md:h-4 md:w-4" />
+            </Button>
+          </div>
+
+          {/* Scrubber above the buttons on a phone: it reads as a continuation
+              of the score, and keeps the tappable row at the bottom edge. On
+              desktop `flex-[1_1_2.5rem] min-w-0` lets it give up width first,
+              so the speed group never orphans its percentage onto a new line. */}
+          <div className="order-first flex items-center gap-2.5 font-mono text-xs md:order-none md:min-w-0 md:flex-[1_1_2.5rem] md:gap-3">
+            <span className="shrink-0 font-semibold tabular-nums text-accent">
+              {formatMs(positionMs)}
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={durationMs || 1}
+              value={Math.min(positionMs, durationMs || 1)}
+              disabled={controlsDisabled || durationMs === 0}
+              onMouseDown={() => setScrubbing(true)}
+              onTouchStart={() => setScrubbing(true)}
+              onChange={(e) => setPositionMs(Number(e.target.value))}
+              onMouseUp={(e) => {
+                setScrubbing(false);
+                if (apiRef.current) {
+                  apiRef.current.timePosition = Number(
+                    (e.target as HTMLInputElement).value,
+                  );
+                }
+              }}
+              onTouchEnd={(e) => {
+                setScrubbing(false);
+                if (apiRef.current) {
+                  apiRef.current.timePosition = Number(
+                    (e.target as HTMLInputElement).value,
+                  );
+                }
+              }}
+              className="h-0.5 min-w-0 flex-1 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
+              aria-label="Seek"
+            />
+            <span className="shrink-0 tabular-nums text-ink-muted">
+              {formatMs(durationMs)}
+            </span>
+          </div>
+
+          <label className="hidden shrink-0 flex-nowrap items-center gap-2 font-mono text-xs md:flex">
+            <span className="shrink-0 text-[9.5px] uppercase tracking-label text-ink-faint">
+              Speed
+            </span>
+            <input
+              type="range"
+              min={SPEED_PERCENT_MIN}
+              max={SPEED_SLIDER_MAX}
+              step={SPEED_PERCENT_STEP}
+              value={speedToSliderPercent(speed)}
+              disabled={controlsDisabled}
+              onChange={(e) =>
+                changeSpeed(percentToSpeed(Number(e.target.value)))
               }
-            }}
-            onTouchEnd={(e) => {
-              setScrubbing(false);
-              if (apiRef.current) {
-                apiRef.current.timePosition = Number(
-                  (e.target as HTMLInputElement).value,
-                );
-              }
-            }}
-            className="h-1.5 flex-1 cursor-pointer accent-accent disabled:cursor-not-allowed disabled:opacity-50 md:h-1"
-            aria-label="Seek"
-          />
-          <span className="tabular-nums">{formatMs(durationMs)}</span>
-        </div>
+              className="h-0.5 w-[82px] shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
+              aria-label="Playback speed"
+              aria-valuetext={`${speedToPercent(speed)}%`}
+            />
+            <span className="w-9 shrink-0 tabular-nums text-ink">
+              {speedToPercent(speed)}%
+            </span>
+          </label>
+          </div>
 
-        <label className="hidden items-center gap-2 text-xs text-zinc-400 md:flex">
-          <span className="shrink-0">Speed</span>
-          <input
-            type="range"
-            min={SPEED_PERCENT_MIN}
-            max={SPEED_SLIDER_MAX}
-            step={SPEED_PERCENT_STEP}
-            value={speedToSliderPercent(speed)}
-            disabled={controlsDisabled}
-            onChange={(e) =>
-              changeSpeed(percentToSpeed(Number(e.target.value)))
-            }
-            className="h-1 w-24 cursor-pointer accent-accent disabled:cursor-not-allowed disabled:opacity-50"
-            aria-label="Playback speed"
-            aria-valuetext={`${speedToPercent(speed)}%`}
-          />
-          <span className="w-9 shrink-0 tabular-nums">
-            {speedToPercent(speed)}%
-          </span>
-        </label>
-
-        {/* Levels, alignment and printing are desktop-only in the bar; on a
-            phone they live in the mixer sheet. */}
-        {(hasBacking || synthNoteCount > 0) && (
-          <div className="hidden shrink-0 items-center gap-2 md:flex">
-            {hasBacking && (
+        {/* Row two: levels, alignment and printing — desktop only; on a phone
+            these live in the mixer sheet. */}
+        <div className="hidden flex-wrap items-center gap-2 px-3 py-2.5 md:flex">
+          {hasBacking && (
+            <>
+              <span className="font-mono text-[9.5px] uppercase tracking-label text-ink-faint">
+                Rec
+              </span>
               <BackingVolumeControl
                 volume={backingVol}
                 muted={backingMuted}
@@ -1566,8 +1704,13 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
                 onMuteToggle={() => setBackingMuted((m) => !m)}
                 disabled={controlsDisabled}
               />
-            )}
-            {synthNoteCount > 0 && (
+            </>
+          )}
+          {synthNoteCount > 0 && (
+            <>
+              <span className="ml-1.5 font-mono text-[9.5px] uppercase tracking-label text-ink-faint">
+                Ref
+              </span>
               <SynthVolumeControl
                 volume={synthVol}
                 muted={synthMuted}
@@ -1576,54 +1719,63 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
                 trackName={trackNames[selectedTrack]}
                 disabled={controlsDisabled}
               />
-            )}
-          </div>
-        )}
+            </>
+          )}
 
-        {hasBacking && (
-          <div className="hidden md:block">
-            <AudioOffsetControl
-              compact
-              offsetMs={offsetMs}
-              onChange={handleOffsetChange}
-              onReset={handleOffsetReset}
-              onAutoAlign={handleAutoAlign}
-              autoAligning={autoAligning}
-              disabled={controlsDisabled}
-            />
-          </div>
-        )}
+          {hasBacking && (
+            <>
+              <span aria-hidden className="mx-1 h-5 w-px bg-dot" />
+              <span className="font-mono text-[9.5px] uppercase tracking-label text-ink-faint">
+                Offset
+              </span>
+              <AudioOffsetControl
+                compact
+                offsetMs={offsetMs}
+                onChange={handleOffsetChange}
+                onReset={handleOffsetReset}
+                onAutoAlign={handleAutoAlign}
+                autoAligning={autoAligning}
+                disabled={controlsDisabled}
+              />
+            </>
+          )}
 
-        {IS_DEV && hasBacking && (
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={dtwRunning ? "Aligning… (sync diagnostics)" : "Sync diagnostics"}
-            aria-pressed={diagOpen}
-            className={cn(
-              "hidden md:inline-flex",
-              (diagOpen || dtwRunning) && "text-accent",
+          <span className="ml-auto flex items-center gap-2">
+            {IS_DEV && hasBacking && (
+              <Button
+                variant="outline"
+                size="icon"
+                aria-label={
+                  dtwRunning
+                    ? "Aligning… (sync diagnostics)"
+                    : "Sync diagnostics"
+                }
+                aria-pressed={diagOpen}
+                className={cn((diagOpen || dtwRunning) && engagedKey)}
+                onClick={() => setDiagOpen((o) => !o)}
+              >
+                <Activity
+                  className={cn("h-4 w-4", dtwRunning && "animate-pulse")}
+                />
+              </Button>
             )}
-            onClick={() => setDiagOpen((o) => !o)}
-          >
-            <Activity className={cn("h-4 w-4", dtwRunning && "animate-pulse")} />
-          </Button>
-        )}
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Print"
-          disabled={status !== "ready"}
-          className="hidden md:inline-flex"
-          onClick={() => apiRef.current?.print()}
-        >
-          <Printer className="h-4 w-4" />
-        </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="Print"
+              disabled={status !== "ready"}
+              onClick={() => apiRef.current?.print()}
+            >
+              <Printer className="h-4 w-4" />
+            </Button>
+          </span>
+        </div>
       </div>
 
       <div
         ref={viewportRef}
-        className="relative order-1 min-h-[16rem] flex-1 overflow-auto overscroll-contain rounded-lg border border-white/5 bg-white text-black md:order-none md:min-h-[360px]"
+        className="relative order-1 min-h-[16rem] flex-1 overflow-auto overscroll-contain rounded-sm border border-rule-strong bg-paper-sheet text-[#16181c] shadow-sheet md:order-none md:min-h-[360px]"
+        style={{ backgroundColor: scoreAppearance.sheetColor }}
       >
         {overlayVisible && (
           <LoadingScoreOverlay
@@ -1639,14 +1791,17 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
             aria-live="assertive"
             aria-label={`Count-in, ${countInLeft} to go`}
           >
-            <span className="flex h-24 w-24 items-center justify-center rounded-full bg-black/70 text-5xl font-semibold tabular-nums text-white shadow-xl">
+            <span className="flex h-24 w-24 items-center justify-center rounded-full bg-ink/85 font-display text-5xl font-bold tabular-nums text-paper">
               {countInLeft}
             </span>
           </div>
         )}
         <div
           ref={hostRef}
-          className={cn("alphatab-host p-1 md:p-4", overlayVisible && "invisible")}
+          className={cn(
+            "alphatab-host p-1 md:px-[22px] md:py-5",
+            overlayVisible && "invisible",
+          )}
         />
       </div>
 
@@ -1660,6 +1815,9 @@ export function AlphaTabPlayer({ songId, tabData }: AlphaTabPlayerProps) {
           tabOnly={tabOnly}
           onTabOnlyToggle={toggleTabOnly}
           tabOnlyDisabled={status !== "ready"}
+          scoreAppearance={scoreAppearance}
+          onScoreAppearance={updateScoreAppearance}
+          onScoreAppearanceReset={resetScoreAppearance}
           countIn={countInEnabled}
           onCountInToggle={toggleCountIn}
           countInDisabled={controlsDisabled}

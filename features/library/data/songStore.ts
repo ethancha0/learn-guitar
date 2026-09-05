@@ -182,6 +182,123 @@ export function setTabOnly(value: boolean): void {
   window.localStorage.setItem(TAB_ONLY_KEY, value ? "1" : "0");
 }
 
+// --- Score appearance (global) ----------------------------------------------
+
+export interface ScoreAppearance {
+  /** alphaTab display scale, where 1 is 100%. */
+  scale: number;
+  /** alphaTab layout stretch force. Lower values fit more notes per row. */
+  stretch: number;
+  /** Guitar tablature number font size, in CSS pixels. */
+  tabNumberSize: number;
+  /** Bar number font size, in CSS pixels. */
+  barNumberSize: number;
+  /** Text font family for tablature and bar numbers. */
+  numberFontFamily: string;
+  /** CSS hex color for the sheet surface behind the notation. */
+  sheetColor: string;
+  /** CSS hex color for primary notation glyphs and tab numbers. */
+  inkColor: string;
+  /** CSS hex color for staff lines. */
+  staffLineColor: string;
+  /** CSS hex color for bar numbers. */
+  barNumberColor: string;
+}
+
+export const DEFAULT_SCORE_APPEARANCE: ScoreAppearance = {
+  scale: 1,
+  stretch: 0.8,
+  tabNumberSize: 20,
+  barNumberSize: 11,
+  numberFontFamily: "Serif",
+  sheetColor: "#FDF5E6",
+  inkColor: "#000000",
+  staffLineColor: "#a5a5a5",
+  barNumberColor: "#c80000",
+};
+
+const SCORE_APPEARANCE_KEY = "learn-bass.score-appearance";
+
+function isHexColor(value: unknown): value is string {
+  return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
+}
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number) {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function sanitizeNumberFontFamily(value: unknown): string {
+  if (
+    value === "Arial" ||
+    value === "IBM Plex Mono" ||
+    value === "Serif" ||
+    value === "Georgia" ||
+    value === "Verdana"
+  ) {
+    return value;
+  }
+  return DEFAULT_SCORE_APPEARANCE.numberFontFamily;
+}
+
+export function sanitizeScoreAppearance(
+  value: Partial<ScoreAppearance> | null | undefined,
+): ScoreAppearance {
+  return {
+    scale: clampNumber(value?.scale, 0.75, 2, DEFAULT_SCORE_APPEARANCE.scale),
+    stretch: clampNumber(
+      value?.stretch,
+      0.35,
+      2,
+      DEFAULT_SCORE_APPEARANCE.stretch,
+    ),
+    tabNumberSize: clampNumber(
+      value?.tabNumberSize,
+      10,
+      22,
+      DEFAULT_SCORE_APPEARANCE.tabNumberSize,
+    ),
+    barNumberSize: clampNumber(
+      value?.barNumberSize,
+      9,
+      18,
+      DEFAULT_SCORE_APPEARANCE.barNumberSize,
+    ),
+    numberFontFamily: sanitizeNumberFontFamily(value?.numberFontFamily),
+    sheetColor: isHexColor(value?.sheetColor)
+      ? value.sheetColor
+      : DEFAULT_SCORE_APPEARANCE.sheetColor,
+    inkColor: isHexColor(value?.inkColor)
+      ? value.inkColor
+      : DEFAULT_SCORE_APPEARANCE.inkColor,
+    staffLineColor: isHexColor(value?.staffLineColor)
+      ? value.staffLineColor
+      : DEFAULT_SCORE_APPEARANCE.staffLineColor,
+    barNumberColor: isHexColor(value?.barNumberColor)
+      ? value.barNumberColor
+      : DEFAULT_SCORE_APPEARANCE.barNumberColor,
+  };
+}
+
+export function getScoreAppearance(): ScoreAppearance {
+  if (typeof window === "undefined") return DEFAULT_SCORE_APPEARANCE;
+  try {
+    const raw = window.localStorage.getItem(SCORE_APPEARANCE_KEY);
+    return sanitizeScoreAppearance(raw ? JSON.parse(raw) : null);
+  } catch {
+    return DEFAULT_SCORE_APPEARANCE;
+  }
+}
+
+export function setScoreAppearance(value: ScoreAppearance): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(
+    SCORE_APPEARANCE_KEY,
+    JSON.stringify(sanitizeScoreAppearance(value)),
+  );
+}
+
 // --- Count-in (global) -------------------------------------------------------
 
 const COUNT_IN_KEY = "learn-bass.count-in";

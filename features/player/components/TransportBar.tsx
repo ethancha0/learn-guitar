@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Play, Pause, SkipBack, Repeat, Bell } from "lucide-react";
 import { cn } from "@/lib/cn";
-import { Button } from "@/components/ui/Button";
+import { Button, engagedKey } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
 import { formatDuration } from "@/features/library/components/formatDuration";
 import { defaultPlaybackState } from "../types/playback";
@@ -16,7 +16,7 @@ export function TransportBar({ durationSec }: { durationSec: number }) {
   const [state, setState] = useState(defaultPlaybackState);
 
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-white/5 bg-surface-raised px-3 py-3 md:gap-4 md:px-4">
+    <div className="flex flex-wrap items-center gap-2 rounded-sm border border-rule-strong bg-paper-raised px-3 py-2.5 md:gap-4 md:px-4">
       <Button
         variant="ghost"
         size="icon"
@@ -34,9 +34,9 @@ export function TransportBar({ durationSec }: { durationSec: number }) {
         {state.isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
       </Button>
 
-      <div className="order-last flex w-full min-w-[10rem] items-center gap-3 text-xs text-zinc-400 md:order-none md:w-auto md:flex-1">
+      <div className="order-last flex w-full min-w-[10rem] items-center gap-3 font-mono text-xs text-ink-muted md:order-none md:w-auto md:flex-1">
         <span className="tabular-nums">{formatDuration(state.positionSec)}</span>
-        <div className="h-1 flex-1 overflow-hidden rounded-full bg-surface-overlay">
+        <div className="h-0.5 flex-1 overflow-hidden bg-track">
           <div
             className="h-full bg-accent"
             style={{ width: `${(state.positionSec / durationSec) * 100}%` }}
@@ -45,7 +45,7 @@ export function TransportBar({ durationSec }: { durationSec: number }) {
         <span className="tabular-nums">{formatDuration(durationSec)}</span>
       </div>
 
-      <label className="flex items-center gap-1 text-xs text-zinc-400">
+      <label className="flex items-center gap-1 font-mono text-xs text-ink-muted">
         <span className="hidden sm:inline">Speed</span>
         <Select
           value={state.speed}
@@ -64,7 +64,7 @@ export function TransportBar({ durationSec }: { durationSec: number }) {
         size="icon"
         aria-pressed={state.loop !== null}
         aria-label="Toggle loop"
-        className={cn(state.loop !== null && "text-accent")}
+        className={cn(state.loop !== null && engagedKey)}
         onClick={() =>
           setState((s) => ({
             ...s,
@@ -80,7 +80,7 @@ export function TransportBar({ durationSec }: { durationSec: number }) {
         size="icon"
         aria-pressed={state.metronome}
         aria-label="Toggle metronome"
-        className={cn(state.metronome && "text-accent")}
+        className={cn(state.metronome && engagedKey)}
         onClick={() => setState((s) => ({ ...s, metronome: !s.metronome }))}
       >
         <Bell className="h-4 w-4" />

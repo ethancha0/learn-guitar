@@ -2,11 +2,13 @@
 
 import { useState } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { Guitar, Menu, X } from "lucide-react";
+import { Menu, X } from "lucide-react";
 import { AuthButton } from "@/components/auth/AuthButton";
 import { Button } from "@/components/ui/Button";
 import { DialogOverlay, DialogPortal } from "@/components/ui/Dialog";
 import { SidebarNav } from "./SidebarNav";
+import { ThemeToggle } from "./ThemeToggle";
+import { Wordmark, WordmarkLockup } from "./Wordmark";
 
 /**
  * Phone-only header: the sidebar is off-canvas below `md`, so nav lives behind
@@ -17,7 +19,7 @@ export function MobileTopBar() {
   const [open, setOpen] = useState(false);
 
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2 border-b border-white/5 bg-surface-raised px-2 pt-[env(safe-area-inset-top)] md:hidden">
+    <header className="flex h-12 shrink-0 items-center gap-2 border-b border-rule bg-paper-raised px-2 pt-[env(safe-area-inset-top)] md:hidden">
       <DialogPrimitive.Root open={open} onOpenChange={setOpen}>
         <DialogPrimitive.Trigger asChild>
           <Button variant="ghost" size="icon" aria-label="Open menu">
@@ -29,15 +31,18 @@ export function MobileTopBar() {
           <DialogOverlay />
           <DialogPrimitive.Content
             aria-describedby={undefined}
-            className="fixed inset-y-0 left-0 z-50 flex w-64 max-w-[80vw] flex-col gap-6 border-r border-white/10 bg-surface-raised px-3 py-5 shadow-2xl focus:outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left"
+            className="fixed inset-y-0 left-0 z-50 flex w-64 max-w-[80vw] flex-col gap-7 border-r border-rule bg-paper-raised px-3.5 py-[22px] focus:outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left"
           >
-            <div className="flex items-center gap-2 px-2">
-              <Guitar className="h-5 w-5 text-accent" />
-              <DialogPrimitive.Title className="text-sm font-semibold tracking-tight">
-                Learn Bass
-              </DialogPrimitive.Title>
+            <div className="flex items-center gap-2">
+              <WordmarkLockup
+                title={
+                  <DialogPrimitive.Title className="font-display text-base font-bold tracking-[-0.01em] text-ink">
+                    Learn Bass
+                  </DialogPrimitive.Title>
+                }
+              />
               <DialogPrimitive.Close
-                className="ml-auto rounded-md p-1 text-zinc-400 hover:text-zinc-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                className="ml-auto rounded-sm p-1 text-ink-faint transition-colors hover:text-ink focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                 aria-label="Close menu"
               >
                 <X className="h-4 w-4" />
@@ -46,19 +51,23 @@ export function MobileTopBar() {
 
             <SidebarNav onNavigate={() => setOpen(false)} />
 
-            <div className="mt-auto">
+            <div className="mt-auto flex flex-col gap-3">
+              <ThemeToggle />
               <AuthButton />
             </div>
           </DialogPrimitive.Content>
         </DialogPortal>
       </DialogPrimitive.Root>
 
-      <span className="flex items-center gap-2 text-sm font-semibold tracking-tight">
-        <Guitar className="h-4 w-4 text-accent" />
-        Learn Bass
+      <span className="flex items-center gap-2.5">
+        <Wordmark />
+        <span className="font-display text-base font-bold tracking-[-0.01em] text-ink">
+          Fretly
+        </span>
       </span>
 
-      <div className="ml-auto">
+      <div className="ml-auto flex items-center gap-1">
+        <ThemeToggle compact />
         <AuthButton compact />
       </div>
     </header>

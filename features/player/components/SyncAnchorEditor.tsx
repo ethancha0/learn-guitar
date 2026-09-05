@@ -163,7 +163,7 @@ export function SyncAnchorEditor({
   };
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border border-white/5 bg-surface-raised p-4">
+    <div className="flex flex-col gap-3 rounded-sm border border-rule bg-paper-raised p-4">
       <div className="flex items-center justify-between gap-2">
         <h2 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-200">
           <Anchor className="h-4 w-4 text-accent" />
@@ -235,7 +235,7 @@ export function SyncAnchorEditor({
                 landed == null ||
                 Math.abs(landed - a.audioTime) <= ANCHOR_TOLERANCE_SEC;
               return (
-              <tr key={a.scoreTime} className="border-t border-white/5">
+              <tr key={a.scoreTime} className="border-t border-rule">
                 <td className="py-1 pr-2">{fmt(a.scoreTime)}</td>
                 <td className="py-1 pr-2">{fmt(a.audioTime)}</td>
                 <td className={cn("py-1 pr-2", applied ? "text-accent" : "text-amber-400")}>
@@ -248,7 +248,7 @@ export function SyncAnchorEditor({
                       type="button"
                       aria-label="Delete anchor"
                       onClick={() => handleDelete(a.scoreTime)}
-                      className="text-zinc-500 hover:text-red-400"
+                      className="text-zinc-500 hover:text-accent"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>

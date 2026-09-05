@@ -2,12 +2,88 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * "Score" design tokens. Declared as channel triplets so Tailwind's
+ * `/opacity` modifiers work against them (see `tailwind.config.ts`).
+ *
+ * `:root` is Paper, the default light theme; `.dark` on <html> is Lamp. The
+ * class is set before paint by the inline script in `app/layout.tsx`.
+ */
 :root {
+  color-scheme: light;
+
+  --paper: 244 241 234;
+  --paper-raised: 237 233 222;
+  --paper-sheet: 255 255 255;
+
+  --ink: 22 24 28;
+  --ink-muted: 92 87 77;
+  --ink-faint: 139 133 122;
+  --ink-ghost: 169 162 148;
+
+  --rule: 213 207 192;
+  --rule-strong: 22 24 28;
+
+  --accent: 179 53 43;
+  --accent-muted: 148 39 31;
+  --accent-wash: rgba(179, 53, 43, 0.1);
+
+  --track: 214 209 196;
+  --dot: 200 194 180;
+
+  /* Hover washes. Ink over paper in light, light over ink at night. */
+  --wash-soft: rgba(22, 24, 28, 0.035);
+  --wash: rgba(22, 24, 28, 0.06);
+}
+
+.dark {
   color-scheme: dark;
+
+  --paper: 19 20 23;
+  --paper-raised: 25 27 31;
+  /* The sheet stays paper at night, dimmed one step — alphaTab engraves its
+     glyphs in ink and inverting the score is its own task. */
+  --paper-sheet: 232 228 218;
+
+  --ink: 237 234 225;
+  --ink-muted: 163 156 144;
+  --ink-faint: 122 116 106;
+  --ink-ghost: 86 81 73;
+
+  --rule: 42 45 51;
+  --rule-strong: 237 234 225;
+
+  --accent: 224 87 74;
+  --accent-muted: 238 110 96;
+  --accent-wash: rgba(224, 87, 74, 0.14);
+
+  --track: 51 55 62;
+  --dot: 58 62 69;
+
+  --wash-soft: rgba(237, 234, 225, 0.05);
+  --wash: rgba(237, 234, 225, 0.09);
 }
 
 body {
-  @apply bg-surface text-zinc-100 antialiased;
+  @apply bg-paper font-mono text-ink antialiased;
+}
+
+/* Nothing in the chrome moves, scales or blurs — only colour transitions. */
+@media (prefers-reduced-motion: no-preference) {
+  a,
+  button,
+  input[type="range"],
+  [role="button"] {
+    transition:
+      background-color 120ms ease-out,
+      border-color 120ms ease-out,
+      color 120ms ease-out;
+  }
+}
+
+/* Sliders are hairline rules with an ink thumb, not filled UI-kit tracks. */
+input[type="range"] {
+  accent-color: rgb(var(--ink));
 }
 
 /*
@@ -21,39 +97,36 @@ body {
 
 /* Wash over the bar currently being played. */
 .alphatab-host .at-cursor-bar {
-  background: rgba(34, 197, 94, 0.1);
+  background: var(--accent-wash);
 }
 
 /* The vertical playhead that sweeps toward the next note. alphaTab sizes and
    animates it via inline transforms, so only paint it here — no width/transition
    overrides or the animation breaks. */
 .alphatab-host .at-cursor-beat {
-  background: #16a34a;
-  box-shadow:
-    0 0 0 1px rgba(22, 163, 74, 0.9),
-    0 0 12px 2px rgba(22, 163, 74, 0.65);
+  /* Engraved ink doesn't bloom: the playhead is a flat red rule. */
+  background: rgb(var(--accent));
 }
 
 /* Notes of the beat that is sounding right now. */
 .alphatab-host .at-highlight * {
-  fill: #16a34a !important;
-  stroke: #16a34a !important;
+  fill: rgb(var(--accent)) !important;
+  stroke: rgb(var(--accent)) !important;
 }
 
 .alphatab-host .at-selection div {
-  background: rgba(34, 197, 94, 0.12);
+  background: rgb(var(--accent) / 0.12);
 }
 
 .sync-loading-grid {
   position: absolute;
   inset: 0;
+  /* Flat paper ground plus the grid rules — no coloured glows. */
   background:
-    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-    radial-gradient(circle at 24% 20%, rgba(34, 197, 94, 0.16), transparent 28%),
-    radial-gradient(circle at 78% 72%, rgba(245, 158, 11, 0.12), transparent 30%),
-    #111315;
-  background-size: 28px 28px, 28px 28px, auto, auto, auto;
+    linear-gradient(rgba(22, 24, 28, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(22, 24, 28, 0.05) 1px, transparent 1px),
+    #ede9de;
+  background-size: 28px 28px, 28px 28px, auto;
 }
 
 .sync-loading-score {
@@ -61,14 +134,9 @@ body {
   width: min(100%, 22rem);
   height: 8.5rem;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
-  background:
-    linear-gradient(135deg, rgba(39, 39, 42, 0.92), rgba(24, 24, 27, 0.96)),
-    #18181b;
-  box-shadow:
-    0 18px 60px rgba(0, 0, 0, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  border: 1px solid #16181c;
+  border-radius: 2px;
+  background: #ede9de;
 }
 
 .sync-loading-score::after {
@@ -78,7 +146,7 @@ body {
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(255, 255, 255, 0.08),
+    rgba(22, 24, 28, 0.06),
     transparent
   );
   transform: translateX(-100%);
@@ -99,7 +167,7 @@ body {
   left: 0;
   right: 0;
   height: 1px;
-  background: rgba(228, 228, 231, 0.32);
+  background: rgba(22, 24, 28, 0.32);
 }
 
 .sync-loading-line:nth-child(1) {
@@ -127,9 +195,7 @@ body {
   top: -0.7rem;
   bottom: -0.7rem;
   width: 2px;
-  border-radius: 999px;
-  background: #22c55e;
-  box-shadow: 0 0 18px rgba(34, 197, 94, 0.75);
+  background: #b3352b;
   animation: sync-loading-playhead 2.4s cubic-bezier(0.45, 0, 0.2, 1) infinite;
 }
 
@@ -138,8 +204,7 @@ body {
   width: 1rem;
   height: 0.72rem;
   border-radius: 999px;
-  background: #f4f4f5;
-  box-shadow: 0 0 18px rgba(244, 244, 245, 0.18);
+  background: #16181c;
   transform: rotate(-18deg) scale(0.9);
   animation: sync-loading-note 2.4s ease-in-out infinite;
 }
@@ -158,46 +223,48 @@ body {
 .sync-loading-note.note-1 {
   left: 8%;
   top: 67%;
-  color: #22c55e;
-  background: #22c55e;
+  color: #b3352b;
+  background: #b3352b;
   animation-delay: 0s;
 }
 
 .sync-loading-note.note-2 {
   left: 23%;
   top: 37%;
-  color: #e4e4e7;
+  color: #16181c;
+  background: #16181c;
   animation-delay: 0.15s;
 }
 
 .sync-loading-note.note-3 {
   left: 39%;
   top: 51%;
-  color: #38bdf8;
-  background: #38bdf8;
+  color: #b3352b;
+  background: #b3352b;
   animation-delay: 0.3s;
 }
 
 .sync-loading-note.note-4 {
   left: 56%;
   top: 21%;
-  color: #f59e0b;
-  background: #f59e0b;
+  color: #16181c;
+  background: #16181c;
   animation-delay: 0.45s;
 }
 
 .sync-loading-note.note-5 {
   left: 71%;
   top: 65%;
-  color: #e4e4e7;
+  color: #16181c;
+  background: #16181c;
   animation-delay: 0.6s;
 }
 
 .sync-loading-note.note-6 {
   left: 85%;
   top: 39%;
-  color: #22c55e;
-  background: #22c55e;
+  color: #b3352b;
+  background: #b3352b;
   animation-delay: 0.75s;
 }
 

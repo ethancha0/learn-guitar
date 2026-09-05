@@ -41,11 +41,13 @@ export function AudioOffsetControl({
       )}
     >
       {!compact && (
-        <span className="text-xs font-medium text-zinc-300">Audio offset</span>
+        <span className="font-mono text-[9.5px] uppercase tracking-label text-ink-faint">
+          Audio offset
+        </span>
       )}
-      <div className="flex flex-wrap items-center gap-1 text-xs text-zinc-400">
+      <div className="flex flex-wrap items-center gap-1.5 font-mono text-xs text-ink">
         <Button
-          variant="ghost"
+          variant="outline"
           size="icon"
           aria-label="Offset −100 ms"
           disabled={disabled}
@@ -54,7 +56,7 @@ export function AudioOffsetControl({
           <ChevronsLeft className="h-4 w-4" />
         </Button>
         <Button
-          variant="ghost"
+          variant="outline"
           size="icon"
           aria-label="Offset −10 ms"
           disabled={disabled}
@@ -62,11 +64,11 @@ export function AudioOffsetControl({
         >
           <ChevronLeft className="h-4 w-4" />
         </Button>
-        <span className="w-16 text-center tabular-nums text-zinc-200">
+        <span className="min-w-[54px] border-b border-ink pb-0.5 text-center tabular-nums text-ink">
           {fmt(offsetMs)}
         </span>
         <Button
-          variant="ghost"
+          variant="outline"
           size="icon"
           aria-label="Offset +10 ms"
           disabled={disabled}
@@ -75,7 +77,7 @@ export function AudioOffsetControl({
           <ChevronRight className="h-4 w-4" />
         </Button>
         <Button
-          variant="ghost"
+          variant="outline"
           size="icon"
           aria-label="Offset +100 ms"
           disabled={disabled}
@@ -84,7 +86,7 @@ export function AudioOffsetControl({
           <ChevronsRight className="h-4 w-4" />
         </Button>
         <Button
-          variant="ghost"
+          variant="outline"
           size="sm"
           aria-label="Auto-align recording"
           disabled={disabled || autoAligning}
@@ -98,7 +100,7 @@ export function AudioOffsetControl({
           {!compact && <span className="ml-1">Auto</span>}
         </Button>
         <Button
-          variant="ghost"
+          variant="outline"
           size="sm"
           aria-label="Reset offset"
           disabled={disabled || offsetMs === 0}
@@ -108,7 +110,7 @@ export function AudioOffsetControl({
         </Button>
       </div>
       {!compact && (
-        <p className="text-[11px] leading-snug text-zinc-500">
+        <p className="font-display text-[13px] italic leading-snug text-ink-muted">
           Positive delays the recording. Adjust while playing until the strums
           line up with the cursor.
         </p>

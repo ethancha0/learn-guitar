@@ -6,7 +6,7 @@ export const Card = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
     <div
       ref={ref}
       className={cn(
-        "rounded-lg border border-white/5 bg-surface-raised p-4",
+        "rounded-sm border border-rule-strong bg-paper-raised p-4",
         className,
       )}
       {...props}
@@ -21,7 +21,10 @@ export function CardTitle({
 }: HTMLAttributes<HTMLHeadingElement>) {
   return (
     <h3
-      className={cn("font-medium text-zinc-100", className)}
+      className={cn(
+        "font-display text-[19px] font-semibold tracking-[-0.015em] text-ink",
+        className,
+      )}
       {...props}
     />
   );
@@ -31,5 +34,10 @@ export function CardDescription({
   className,
   ...props
 }: HTMLAttributes<HTMLParagraphElement>) {
-  return <p className={cn("text-sm text-zinc-400", className)} {...props} />;
+  return (
+    <p
+      className={cn("font-display text-sm italic text-ink-muted", className)}
+      {...props}
+    />
+  );
 }

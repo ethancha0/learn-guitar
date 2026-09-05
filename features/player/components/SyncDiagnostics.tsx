@@ -108,7 +108,7 @@ export function SyncDiagnostics({
   const [dx, dy] = dot ? dot.split(",") : ["0", "0"];
 
   return (
-    <aside className="fixed right-0 top-0 z-50 flex h-dvh w-80 flex-col gap-3 overflow-y-auto border-l border-white/10 bg-surface-raised p-3 shadow-2xl">
+    <aside className="fixed right-0 top-0 z-50 flex h-dvh w-80 flex-col gap-3 overflow-y-auto border-l border-rule bg-paper-raised p-3">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-zinc-200">Sync diagnostics</h2>
         <Button variant="ghost" size="icon" aria-label="Hide" onClick={onClose}>
@@ -119,7 +119,7 @@ export function SyncDiagnostics({
       {/* Unmissable: which mapping is really driving playback. */}
       <div
         className={cn(
-          "rounded-md px-3 py-2 text-xs font-semibold",
+          "rounded-sm px-3 py-2 text-xs font-semibold",
           syncSource === "dtw"
             ? "bg-accent/15 text-accent"
             : syncSource === "offset"
@@ -134,7 +134,7 @@ export function SyncDiagnostics({
             : "No sync map yet"}
       </div>
       {syncWarning && (
-        <p className="rounded-md bg-red-500/10 px-3 py-2 text-[11px] leading-snug text-red-300">
+        <p className="rounded-sm bg-red-500/10 px-3 py-2 text-[11px] leading-snug text-red-300">
           {syncWarning}
         </p>
       )}
@@ -170,7 +170,7 @@ export function SyncDiagnostics({
         <dd
           className={
             "text-right tabular-nums " +
-            (Math.abs(errorMs) < 40 ? "text-accent" : "text-red-400")
+            (Math.abs(errorMs) < 40 ? "text-accent" : "text-accent")
           }
         >
           {errorMs >= 0 ? "+" : ""}
@@ -212,7 +212,7 @@ export function SyncDiagnostics({
         </table>
       )}
 
-      <div className="rounded-md border border-white/10 bg-surface p-2">
+      <div className="rounded-sm border border-rule bg-paper p-2">
         <svg
           width={W}
           height={H}
@@ -223,7 +223,7 @@ export function SyncDiagnostics({
         >
           <rect x={0} y={0} width={W} height={H} fill="transparent" />
           <path d={diagPath} stroke="#3f3f46" strokeWidth={1} fill="none" strokeDasharray="3 3" />
-          <path d={path} stroke="#4ade80" strokeWidth={1.5} fill="none" />
+          <path d={path} stroke="#16181c" strokeWidth={1.5} fill="none" />
           {dot && <circle cx={dx} cy={dy} r={3} fill="#f4f4f5" />}
         </svg>
         <p className="mt-1 text-[10px] text-zinc-500">
@@ -286,14 +286,14 @@ export function SyncDiagnostics({
           Verify transfer to alphaTab
         </Button>
         {verify && (
-          <div className="rounded-md border border-white/10 bg-surface p-2 text-[11px] leading-snug">
+          <div className="rounded-sm border border-rule bg-paper p-2 text-[11px] leading-snug">
             {"error" in verify ? (
               <p className="text-amber-300">{verify.error}</p>
             ) : (
               <>
                 <p
                   className={
-                    verify.transferFaithful ? "text-accent" : "text-red-400"
+                    verify.transferFaithful ? "text-accent" : "text-accent"
                   }
                 >
                   {verify.pointCount} point(s) held by alphaTab · max{" "}
@@ -330,7 +330,7 @@ export function SyncDiagnostics({
       </div>
 
       {map?.diagnostics && (
-        <pre className="max-h-40 overflow-auto rounded-md bg-surface p-2 text-[10px] text-zinc-400">
+        <pre className="max-h-40 overflow-auto rounded-sm bg-paper p-2 text-[10px] text-zinc-400">
           {JSON.stringify(map.diagnostics, null, 2)}
         </pre>
       )}

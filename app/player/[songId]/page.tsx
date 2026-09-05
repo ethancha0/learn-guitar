@@ -1,9 +1,8 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
 import {
   addImportedSong,
   useSongById,
@@ -11,7 +10,11 @@ import {
 import { hydrateSupabaseSong } from "@/features/library/data/supabaseSongStore";
 import { ScoreView } from "@/features/player/components/ScoreView";
 import { TransportBar } from "@/features/player/components/TransportBar";
-import { AlphaTabPlayer } from "@/features/player/components/AlphaTabPlayer";
+import {
+  AlphaTabPlayer,
+  type ScoreMeta,
+} from "@/features/player/components/AlphaTabPlayer";
+import { SongMasthead } from "@/features/player/components/SongMasthead";
 import { FeedbackPanel } from "@/features/player/components/FeedbackPanel";
 import { mockGrade } from "@/features/player/data/mockGrade";
 
@@ -26,6 +29,16 @@ export default function PlayerPage({
   const [checkingAccount, setCheckingAccount] = useState(false);
   const [accountChecked, setAccountChecked] = useState(false);
   const [accountLoadError, setAccountLoadError] = useState<string | null>(null);
+  // Tuning and metre are only known once alphaTab has parsed the score, and
+  // they arrive in two separate passes, so they accumulate here.
+  const [scoreMeta, setScoreMeta] = useState<ScoreMeta>({});
+
+  const handleScoreMeta = useCallback(
+    (next: ScoreMeta) => setScoreMeta((prev) => ({ ...prev, ...next })),
+    [],
+  );
+
+  useEffect(() => setScoreMeta({}), [songId]);
 
   useEffect(() => setHydrated(true), []);
 
@@ -74,14 +87,14 @@ export default function PlayerPage({
     // truly doesn't exist.
     if (!hydrated) {
       return (
-        <div className="flex flex-1 items-center justify-center text-sm text-zinc-500">
+        <div className="flex flex-1 items-center justify-center font-display text-[15px] italic text-ink-muted">
           Loading song…
         </div>
       );
     }
     if (checkingAccount || !accountChecked) {
       return (
-        <div className="flex flex-1 items-center justify-center text-sm text-zinc-500">
+        <div className="flex flex-1 items-center justify-center font-display text-[15px] italic text-ink-muted">
           Loading account song…
         </div>
       );
@@ -94,30 +107,18 @@ export default function PlayerPage({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2 md:gap-4">
-      {/* On phones the song header collapses to a single line so the score
-          keeps the vertical space. */}
-      <div className="flex min-w-0 items-baseline gap-2 md:block">
-        <Link
-          href="/library"
-          className="inline-flex shrink-0 items-center gap-1 text-xs text-zinc-400 hover:text-zinc-200"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">Library</span>
-        </Link>
-        <h1 className="mt-0 min-w-0 flex-1 truncate text-base font-semibold md:mt-1 md:text-lg">
-          {song.title}
-        </h1>
-        <p className="shrink-0 truncate text-xs text-zinc-400 md:text-sm">
-          {song.artist} · {song.bpm} BPM
-        </p>
-      </div>
+      <SongMasthead song={song} meta={scoreMeta} />
 
       {song.tabData ? (
-        <AlphaTabPlayer songId={songId} tabData={song.tabData} />
+        <AlphaTabPlayer
+          songId={songId}
+          tabData={song.tabData}
+          onScoreMeta={handleScoreMeta}
+        />
       ) : accountLoadError ? (
         <AccountSongError message={accountLoadError} />
       ) : song.persisted && (checkingAccount || !accountChecked) ? (
-        <div className="flex flex-1 items-center justify-center text-sm text-zinc-500">
+        <div className="flex flex-1 items-center justify-center font-display text-[15px] italic text-ink-muted">
           Loading account song…
         </div>
       ) : (
@@ -138,14 +139,14 @@ export default function PlayerPage({
 function AccountSongError({ message }: { message: string }) {
   return (
     <div className="flex flex-1 items-center justify-center px-4 text-center">
-      <div className="max-w-md rounded-lg border border-red-500/20 bg-red-500/5 p-5">
-        <p className="text-sm font-medium text-red-100">
+      <div className="max-w-md rounded-sm border border-accent bg-accent-wash p-5 text-left">
+        <p className="font-mono text-[9.5px] uppercase tracking-label text-accent">
           Could not load account song
         </p>
-        <p className="mt-2 text-sm text-red-200/80">{message}</p>
+        <p className="mt-2 font-display text-[15px] italic text-ink">{message}</p>
         <Link
           href="/library"
-          className="mt-4 inline-flex text-sm text-accent hover:text-accent-muted"
+          className="mt-4 inline-flex border-b border-ink font-mono text-[11px] uppercase tracking-button text-ink"
         >
           Back to library
         </Link>

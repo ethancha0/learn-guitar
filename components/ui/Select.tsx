@@ -4,16 +4,16 @@ import { cn } from "@/lib/cn";
 export type SelectProps = SelectHTMLAttributes<HTMLSelectElement>;
 
 /**
- * Lightweight native select styled to match the shadcn/ui primitives. Kept
- * native (rather than a Radix listbox) since the transport only needs a short
- * list of speed values.
+ * Lightweight native select. Kept native (rather than a Radix listbox) since
+ * the transport only needs a short list of values; styled as a ruled field —
+ * ink border, paper fill, Spectral label.
  */
 export const Select = forwardRef<HTMLSelectElement, SelectProps>(
   ({ className, ...props }, ref) => (
     <select
       ref={ref}
       className={cn(
-        "h-8 rounded-md border border-white/10 bg-surface-overlay px-2 text-sm text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+        "h-8 rounded-sm border border-ink bg-paper px-2 font-display text-sm text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
         className,
       )}
       {...props}

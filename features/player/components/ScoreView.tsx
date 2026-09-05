@@ -6,10 +6,14 @@ import { Music4 } from "lucide-react";
  */
 export function ScoreView() {
   return (
-    <div className="flex min-h-[320px] flex-1 flex-col items-center justify-center gap-3 rounded-lg border border-white/5 bg-surface-raised text-zinc-500">
-      <Music4 className="h-8 w-8" />
-      <p className="text-sm">Tab / score renders here</p>
-      <p className="text-xs">alphaTab integration pending</p>
+    <div className="flex min-h-[320px] flex-1 flex-col items-center justify-center gap-3 rounded-sm border border-rule-strong bg-paper-sheet text-ink-faint shadow-sheet">
+      <Music4 className="h-7 w-7" />
+      <p className="font-display text-[15px] italic text-ink-muted">
+        Tab / score renders here
+      </p>
+      <p className="font-mono text-[9.5px] uppercase tracking-label">
+        alphaTab integration pending
+      </p>
     </div>
   );
 }

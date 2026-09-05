@@ -64,7 +64,7 @@ function fmt(sec: number): string {
 }
 
 function residualColour(absMs: number): string {
-  if (absMs < 40) return "#4ade80";
+  if (absMs < 40) return "#16181c";
   if (absMs < 100) return "#fbbf24";
   return "#f87171";
 }
@@ -564,7 +564,7 @@ export function SyncDebugView({ songId }: { songId: string }) {
                   ? "text-accent"
                   : Math.abs(liveErrorMs) < 100
                     ? "text-amber-400"
-                    : "text-red-400",
+                    : "text-accent",
               )}
             >
               {liveErrorMs >= 0 ? "+" : ""}
@@ -578,7 +578,7 @@ export function SyncDebugView({ songId }: { songId: string }) {
       </div>
 
       {loadError && (
-        <p className="rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
+        <p className="rounded-sm border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
           {loadError}
         </p>
       )}
@@ -593,7 +593,7 @@ export function SyncDebugView({ songId }: { songId: string }) {
       ) : (
         <>
           {/* transport */}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-white/5 bg-surface-raised px-4 py-2.5 text-xs text-zinc-400">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-sm border border-rule bg-paper-raised px-4 py-2.5 text-xs text-zinc-400">
             <Button size="icon" aria-label={playing ? "Pause" : "Play"} onClick={togglePlay}>
               {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
             </Button>
@@ -613,7 +613,7 @@ export function SyncDebugView({ songId }: { songId: string }) {
                 step={5}
                 value={pxPerSec}
                 onChange={(e) => setPxPerSec(Number(e.target.value))}
-                className="w-28 accent-accent"
+                className="w-28"
                 aria-label="Zoom px per second"
               />
             </label>
@@ -638,7 +638,7 @@ export function SyncDebugView({ songId }: { songId: string }) {
                 step={0.01}
                 value={volume}
                 onChange={(e) => setVolume(Number(e.target.value))}
-                className="w-20 accent-accent"
+                className="w-20"
                 aria-label="Recording volume"
               />
             </label>
@@ -666,7 +666,7 @@ export function SyncDebugView({ songId }: { songId: string }) {
 
           <div
             ref={scrollRef}
-            className="overflow-x-auto rounded-lg border border-white/5 bg-surface"
+            className="overflow-x-auto rounded-sm border border-rule bg-paper"
           >
             <canvas
               ref={canvasRef}
@@ -695,11 +695,11 @@ export function SyncDebugView({ songId }: { songId: string }) {
             onAnchorsChange={() => setSyncVersion((v) => v + 1)}
           />
 
-          <details className="rounded-lg border border-white/5 bg-surface-raised text-xs text-zinc-400">
+          <details className="rounded-sm border border-rule bg-paper-raised text-xs text-zinc-400">
             <summary className="cursor-pointer select-none px-4 py-2.5 text-sm font-medium text-zinc-300">
               Diagnostics
             </summary>
-            <div className="flex flex-col gap-4 border-t border-white/5 p-4">
+            <div className="flex flex-col gap-4 border-t border-rule p-4">
               {syncSettings?.syncMap?.diagnostics && (
                 <dl className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-4">
                   {(
@@ -794,7 +794,7 @@ export function SyncDebugView({ songId }: { songId: string }) {
                       </thead>
                       <tbody className="tabular-nums text-zinc-300">
                         {worst.map(({ h, m }, i) => (
-                          <tr key={i} className="border-t border-white/5">
+                          <tr key={i} className="border-t border-rule">
                             <td className="py-1 pr-3">{m.label}</td>
                             <td className="py-1 pr-3">{m.scoreTimeSec.toFixed(3)}s</td>
                             <td className="py-1 pr-3">{m.audioTimeSec.toFixed(3)}s</td>
@@ -843,7 +843,7 @@ function Stat({
               ? "text-accent"
               : tone < 100
                 ? "text-amber-400"
-                : "text-red-400",
+                : "text-accent",
         )}
       >
         {value}
