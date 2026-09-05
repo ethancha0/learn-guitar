@@ -858,15 +858,15 @@ export function ImportSongDialog() {
               />
             </DialogPrimitive.Overlay>
             <DialogPrimitive.Content asChild forceMount>
-              <motion.div
-                layout
-                className="fixed left-1/2 top-1/2 z-50 grid max-h-[88vh] w-full max-w-3xl -translate-x-1/2 -translate-y-1/2 gap-5 overflow-y-auto rounded-sm border border-rule-strong bg-paper-raised p-8 focus:outline-none"
-                variants={modalVariants}
-                initial="hidden"
-                animate="show"
-                exit="hidden"
-                transition={{ duration: 0.2, ease: "easeOut" }}
-              >
+              <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center p-4 focus:outline-none">
+                <motion.div
+                  className="pointer-events-auto grid max-h-[88vh] w-full max-w-3xl gap-5 overflow-y-auto rounded-sm border border-rule-strong bg-paper-raised p-8"
+                  variants={modalVariants}
+                  initial="hidden"
+                  animate="show"
+                  exit="hidden"
+                  transition={{ duration: 0.2, ease: "easeOut" }}
+                >
                 {stage === "compose" && (
                   <DialogPrimitive.Close
                     className="absolute right-5 top-5 rounded-sm p-1 text-ink-faint transition-colors hover:text-ink focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
@@ -1316,7 +1316,8 @@ export function ImportSongDialog() {
                     </motion.div>
                   )}
                 </AnimatePresence>
-              </motion.div>
+                </motion.div>
+              </div>
             </DialogPrimitive.Content>
           </DialogPortal>
         )}

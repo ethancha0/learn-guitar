@@ -210,6 +210,44 @@ export async function uploadSongToAccount({
   return persisted;
 }
 
+/**
+ * Removes a song from the signed-in user's account: its stored tab/audio files
+ * first, then the row. No-ops when Supabase is unconfigured, nobody is signed
+ * in, or the song was never persisted — those songs only ever lived on device.
+ */
+export async function deleteSongFromAccount(songId: string): Promise<void> {
+  if (!isSupabaseConfigured()) return;
+  const supabase = createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return;
+
+  const { data, error } = await selectSongRow(songId);
+  // No row for this account (PGRST116) — nothing to delete remotely.
+  if (error || !data) return;
+
+  const paths = [data.tab_path, data.audio_path].filter(Boolean);
+  if (paths.length) {
+    const { error: storageError } = await supabase.storage
+      .from(BUCKET)
+      .remove(paths);
+    // A stranded blob is invisible to the user; a song that refuses to delete
+    // is not. Log and still drop the row, which is what the library reads.
+    if (storageError) {
+      console.error("[supabaseSongStore] could not remove song files", storageError);
+    }
+  }
+
+  const { error: deleteError } = await supabase
+    .from("songs")
+    .delete()
+    .eq("id", songId);
+  if (deleteError) throw deleteError;
+
+  dispatchSupabaseSongsChanged();
+}
+
 async function withDownloadTimeout<T>(
   promise: Promise<T>,
   kind: "tab" | "audio",

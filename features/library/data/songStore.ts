@@ -62,6 +62,23 @@ export function addImportedSong(song: ImportedSong): void {
   writeLocal([song, ...read().filter((s) => s.id !== song.id)]);
 }
 
+/**
+ * Drops a song from the session cache, this device's store and its per-song
+ * settings. The account copy (if any) is removed separately by
+ * `deleteSongFromAccount`; see `deleteSong` for the whole sequence.
+ */
+export function removeImportedSong(id: string): void {
+  if (typeof window === "undefined") return;
+  sessionSongs = sessionSongs.filter((s) => s.id !== id);
+  sessionVersion += 1;
+  const local = read();
+  const next = local.filter((s) => s.id !== id);
+  // Account-backed songs are never in localStorage, so still fire the event.
+  if (next.length === local.length) window.dispatchEvent(new Event(EVENT));
+  else writeLocal(next);
+  forgetSongSettings(id);
+}
+
 export function hasImportedSong(id: string): boolean {
   return sessionSongs.some((s) => s.id === id) || read().some((s) => s.id === id);
 }
@@ -471,4 +488,29 @@ export function setSyncAnchors(songId: string, anchors: SyncAnchor[]): void {
       anchors: sorted.length ? sorted : undefined,
     };
   });
+}
+
+// --- Per-song settings cleanup ------------------------------------------------
+
+/**
+ * Forgets everything keyed by song id in the settings maps — the preferred
+ * track and the audio sync (offset, DTW map, anchors). Called on delete so a
+ * re-import of the same file starts from a clean slate instead of inheriting a
+ * mapping made against the old recording.
+ */
+function forgetSongSettings(songId: string): void {
+  if (typeof window === "undefined") return;
+
+  const tracks = readPreferredTrackMap();
+  if (songId in tracks) {
+    delete tracks[songId];
+    window.localStorage.setItem(PREFERRED_TRACK_KEY, JSON.stringify(tracks));
+  }
+
+  const sync = readAudioSyncMap();
+  if (songId in sync) {
+    delete sync[songId];
+    window.localStorage.setItem(AUDIO_SYNC_KEY, JSON.stringify(sync));
+    window.dispatchEvent(new Event(AUDIO_SYNC_EVENT));
+  }
 }
