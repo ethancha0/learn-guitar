@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { resolveAlignProvider } from "@/lib/align/provider";
+import { createClient } from "@/lib/supabase/server";
 
 /**
  * Queues DTW alignment for one song on GitHub Actions.
@@ -13,6 +14,10 @@ import { resolveAlignProvider } from "@/lib/align/provider";
  *
  * The response says only that the run was accepted. The map arrives later, and
  * the player finds it by polling the row (and, failing that, on next open).
+ *
+ * Firing this spends CI minutes, so it is restricted to the song's owner. The
+ * check is the row read itself: the cookie-scoped client is bound by RLS, so a
+ * song belonging to anyone else simply is not there to be found.
  */
 export const runtime = "nodejs";
 
@@ -51,6 +56,29 @@ export async function POST(request: Request) {
     return NextResponse.json(
       { status: "failed", message: "`songId` is required." },
       { status: 400 },
+    );
+  }
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json(
+      { status: "failed", message: "Sign in to align a song." },
+      { status: 401 },
+    );
+  }
+
+  const { data: song } = await supabase
+    .from("songs")
+    .select("id")
+    .eq("id", songId)
+    .maybeSingle();
+  if (!song) {
+    return NextResponse.json(
+      { status: "failed", message: "No such song in your library." },
+      { status: 404 },
     );
   }
 

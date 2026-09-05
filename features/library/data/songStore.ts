@@ -393,9 +393,9 @@ export interface AudioSyncSettings {
    * `pending`; manual retries do not need to block an already usable song.
    *
    * `queued` means the run was handed to CI (see the GitHub Action path in
-   * `alignmentQueue`). That is deliberately *not* blocking: the run takes
-   * minutes, so the song stays playable on the offset fallback and the map
-   * swaps in when it lands.
+   * `alignmentQueue`). It blocks just as `pending` does — the distinction is
+   * only that the wait is minutes rather than seconds, and on someone else's
+   * machine, which the loading overlay says out loud.
    */
   dtwStatus?: "pending" | "queued" | "ready" | "failed";
   /** Persisted "original recording" channel state. */

@@ -240,6 +240,91 @@ describe("queueAlignment", () => {
     expect(songStore.getAudioSync("song")?.dtwStatus).toBe("failed");
   });
 
+  /**
+   * The player blocks while `dtwStatus` is pending or queued, so what sets it
+   * decides whether a song is playable. The rule is "is there anything usable
+   * to fall back on", which is not the same question as `force`.
+   */
+  it("holds the player for a song with no mapping to fall back on", async () => {
+    const { queue, songStore } = await load();
+    const { calls } = mockAlignEndpoint(OK_RESPONSE);
+
+    const done = queue.queueAlignment(request("song"));
+    expect(songStore.getAudioSync("song")?.dtwStatus).toBe("pending");
+
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    calls[0].release();
+    await done;
+    expect(songStore.getAudioSync("song")?.dtwStatus).toBe("ready");
+  });
+
+  it("keeps an already-aligned song playable while it is re-aligned on CI", async () => {
+    vi.useFakeTimers();
+    try {
+      const { queue, songStore } = await load();
+      songStore.patchAudioSync("song", {
+        offsetMs: 0,
+        dtwStatus: "ready",
+        syncMap: {
+          points: OK_RESPONSE.points,
+          method: "dtw:mrmsdtw",
+          status: "ok",
+          createdAt: Date.now(),
+        },
+      });
+      const { calls } = mockAlignEndpoint(
+        { status: "queued" },
+        { mode: "dispatch" },
+      );
+      fetchSyncMapFromAccount.mockResolvedValue(null);
+
+      const done = queue.queueAlignment({ ...request("song"), force: true });
+      await vi.waitFor(() => expect(calls).toHaveLength(1));
+      calls[0].release();
+
+      // Never `queued`: blocking a song that already plays correctly, for a
+      // run that only refines it, would be a regression not an improvement.
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(songStore.getAudioSync("song")?.dtwStatus).toBe("ready");
+
+      await vi.advanceTimersByTimeAsync(11 * 60_000);
+      await done;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("re-attaches to a dispatched run without starting another", async () => {
+    vi.useFakeTimers();
+    try {
+      const { queue, songStore } = await load();
+      // What a reload looks like: the row says CI has it, the in-memory job
+      // is gone, and nothing is watching for the map.
+      songStore.patchAudioSync("song", { offsetMs: 0, dtwStatus: "queued" });
+      const { fetchMock } = mockAlignEndpoint(
+        { status: "queued" },
+        { mode: "dispatch" },
+      );
+      const remote: StoredSyncMap = {
+        points: OK_RESPONSE.points,
+        method: "dtw:mrmsdtw",
+        status: "ok",
+        createdAt: Date.now(),
+      };
+      fetchSyncMapFromAccount.mockResolvedValue(remote);
+
+      const done = queue.resumeDispatchedAlignment("song");
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      expect(await done).toMatchObject({ state: "done" });
+      expect(songStore.getAudioSync("song")?.dtwStatus).toBe("ready");
+      // Crucially: no second dispatch, which would supersede the live run.
+      expect(alignCalls(fetchMock)).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("hands off to CI and installs the map the run writes", async () => {
     vi.useFakeTimers();
     try {

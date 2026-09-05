@@ -65,6 +65,7 @@ import { extractScoreTimeline } from "@/features/player/data/scoreTimeline";
 import { OffsetSyncGenerator } from "@/features/player/data/syncGenerator";
 import {
   queueAlignment,
+  resumeDispatchedAlignment,
   useAlignmentJob,
 } from "@/features/player/data/alignmentQueue";
 import { installSyncDebug } from "@/features/player/data/syncDebug";
@@ -933,12 +934,17 @@ export function AlphaTabPlayer({
         applyRemoteSyncMap(songId, remote);
         return;
       }
-      // Don't start a second run. `failed` is not retried on every open (it
-      // costs a minute of CPU each time), and `queued` means CI already has
-      // this song — re-dispatching would supersede the run in flight and it
-      // would never finish for someone who keeps reopening the song. Both
-      // still benefit from the account check above. The panel can re-run.
-      if (dtwStatus === "failed" || dtwStatus === "queued") return;
+      // A run is already out there; re-dispatching would supersede it and, for
+      // someone who keeps reopening the song, it would never finish. Watch it
+      // instead — the player is blocked on this song until the map lands, so
+      // something has to be looking for it.
+      if (dtwStatus === "queued") {
+        await resumeDispatchedAlignment(songId);
+        return;
+      }
+      // A genuine failure is not retried on every open; it costs a minute of
+      // CPU each time. The diagnostics panel can re-run it by hand.
+      if (dtwStatus === "failed") return;
 
       const blob = await getBackingAudio(songId);
       if (cancelled || !blob) return;
@@ -1207,7 +1213,11 @@ export function AlphaTabPlayer({
   }, []);
 
   const countingIn = countInLeft > 0;
-  const waitingForImportAlignment = dtwStatus === "pending";
+  // Both in-flight states hold the player. A song whose mapping is still being
+  // solved is not ready to practise against: the cursor would track a straight
+  // line and then jump when the real map lands mid-phrase.
+  const waitingForImportAlignment =
+    dtwStatus === "pending" || dtwStatus === "queued";
   const controlsDisabled =
     !playerReady ||
     !audioMetaReady ||
@@ -1578,7 +1588,12 @@ export function AlphaTabPlayer({
     status === "error"
       ? "Try importing the tab again."
       : waitingForImportAlignment
-        ? "Preparing synced playback."
+        ? // The queue's own words when it has them — "Aligning on CI…" reads
+          // very differently from a stall, and this wait can run to minutes.
+          (alignmentJob?.message ??
+          (dtwStatus === "queued"
+            ? "Aligning on CI. This usually takes a few minutes."
+            : "Preparing synced playback."))
         : undefined;
   const seekProgress =
     durationMs > 0 ? Math.min(1, Math.max(0, positionMs / durationMs)) : 0;

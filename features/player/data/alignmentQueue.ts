@@ -92,7 +92,13 @@ export function queueAlignment(
   }
   if (!req.force && hasUsableMap(req.songId)) return Promise.resolve(null);
 
-  if (!req.force) patchAudioSync(req.songId, { dtwStatus: "pending" });
+  // Hold the player only when there is nothing usable to fall back on. That is
+  // the real question, and it is not the same as `force`: a fresh import has no
+  // mapping and must wait for one, while a manual re-align of an already-synced
+  // song should keep playing on the map it has until the better one arrives.
+  if (!hasUsableMap(req.songId)) {
+    patchAudioSync(req.songId, { dtwStatus: "pending" });
+  }
   setJob(req.songId, { state: "queued", message: "Alignment queued…" });
   const run = chain.then(() => align(req));
   // Keep the chain alive: one failed run must not cancel everything behind it.
@@ -137,38 +143,75 @@ async function alignByDispatch(req: AlignmentRequest): Promise<AlignmentJob> {
     });
   }
 
-  // Handed off. Stop holding the player behind the import overlay: the run
-  // takes minutes, and the song is perfectly usable on the offset fallback
-  // until the real map arrives.
-  patchAudioSync(req.songId, { dtwStatus: "queued" });
+  // Handed off. `queued` blocks the player exactly as `pending` does — an
+  // unaligned song is not worth practising against — but says the wait is on
+  // CI, which the overlay reports so a multi-minute run does not read as a
+  // stall. A song that already has a usable map keeps playing on it.
+  if (!hasUsableMap(req.songId)) {
+    patchAudioSync(req.songId, { dtwStatus: "queued" });
+  }
   setJob(req.songId, {
     state: "running",
     message: "Aligning on CI… the map will appear when the run finishes.",
   });
 
+  return pollForDispatchedMap(req.songId);
+}
+
+/**
+ * Watches the song's account row for the map a CI run is producing.
+ *
+ * Split out because it has to be resumable: the player blocks on a `queued`
+ * song, and a reload loses the in-memory job while the run carries on. Without
+ * a way to pick the watch back up, that reload would leave the song blocked
+ * with nobody looking for its map.
+ */
+async function pollForDispatchedMap(songId: string): Promise<AlignmentJob> {
   const deadline = Date.now() + DISPATCH_TIMEOUT_MS;
   while (Date.now() < deadline) {
     await sleep(DISPATCH_POLL_MS);
-    const map = await fetchSyncMapFromAccount(req.songId).catch(() => null);
+    const map = await fetchSyncMapFromAccount(songId).catch(() => null);
     if (map) {
-      applyRemoteSyncMap(req.songId, map);
-      return setJob(req.songId, {
+      applyRemoteSyncMap(songId, map);
+      return setJob(songId, {
         state: "done",
         message: `Aligned on CI: ${map.points.length} points via ${map.method}.`,
       });
     }
   }
 
-  // The run may yet succeed; this only stops watching. `failed` keeps the next
-  // open from firing a second run, and that open checks the account first, so a
-  // late map is still picked up.
-  patchAudioSync(req.songId, { dtwStatus: "failed" });
-  return setJob(req.songId, {
+  // The run may yet succeed; this only stops watching. Marking it `failed`
+  // releases the player rather than blocking it forever, and the next open
+  // checks the account first, so a late map is still picked up.
+  patchAudioSync(songId, { dtwStatus: "failed" });
+  return setJob(songId, {
     state: "failed",
     message:
       "Alignment is taking longer than expected. If the CI run succeeds the " +
       "map will be there next time you open this song.",
   });
+}
+
+/**
+ * Re-attaches to a run that was already dispatched — after a reload, or when
+ * the song is opened in another tab. Does not dispatch anything: the run is
+ * already out there, and starting a second one would supersede it.
+ */
+export function resumeDispatchedAlignment(
+  songId: string,
+): Promise<AlignmentJob | null> {
+  if (typeof window === "undefined") return Promise.resolve(null);
+  const active = jobs.get(songId);
+  if (active?.state === "queued" || active?.state === "running") {
+    return Promise.resolve(null);
+  }
+  setJob(songId, {
+    state: "running",
+    message: "Waiting for the alignment run to finish…",
+  });
+  // Deliberately off `chain`: this is waiting, not working, and must not hold
+  // up a local alignment queued behind it.
+  return pollForDispatchedMap(songId);
 }
 
 async function align(req: AlignmentRequest): Promise<AlignmentJob> {
