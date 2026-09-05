@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { putBackingAudio } from "@/features/player/data/audioStore";
 import { bytesToBase64 } from "./tabFile";
-import type { ImportedSong } from "./songStore";
+import type { ImportedSong, StoredSyncMap } from "./songStore";
 import type { YouTubeSearchResult } from "@/lib/youtube/types";
 
 const BUCKET = "song-files";
@@ -24,6 +24,7 @@ interface SongRow {
   tab_file_name: string;
   audio_file_names: string[];
   youtube_source: YouTubeSearchResult | null;
+  sync_map: StoredSyncMap | null;
   created_at: string;
 }
 
@@ -78,13 +79,68 @@ function requireConfigured() {
   }
 }
 
-function isMissingYoutubeSourceColumn(error: unknown): boolean {
+/**
+ * Columns added after the first schema shipped. A project that has not run the
+ * latest `supabase/schema.sql` is missing them, so every read and write drops
+ * one and retries rather than failing the whole operation.
+ */
+export const OPTIONAL_COLUMNS = ["youtube_source", "sync_map"] as const;
+type OptionalColumn = (typeof OPTIONAL_COLUMNS)[number];
+
+const BASE_COLUMNS =
+  "id,title,artist,duration_sec,bpm,difficulty,tab_path,audio_path,tab_file_name,audio_file_names,created_at";
+
+export function columnList(omit: readonly OptionalColumn[]): string {
+  const present = OPTIONAL_COLUMNS.filter((c) => !omit.includes(c));
+  return present.length ? `${BASE_COLUMNS},${present.join(",")}` : BASE_COLUMNS;
+}
+
+/**
+ * True when `error` is Postgres/PostgREST complaining that `column` does not
+ * exist — 42703 on a read, PGRST204 (schema cache) on a write.
+ */
+export function isMissingColumn(error: unknown, column: string): boolean {
   if (!error || typeof error !== "object") return false;
-  const maybeError = error as { code?: string; message?: string };
-  return (
-    maybeError.code === "PGRST204" ||
-    maybeError.message?.toLowerCase().includes("youtube_source") === true
+  const { code, message } = error as { code?: string; message?: string };
+  if (code !== "42703" && code !== "PGRST204") return false;
+  // PGRST204 does not always name the column; treat it as missing either way.
+  return code === "PGRST204" || (message?.includes(column) ?? false);
+}
+
+/** The first optional column `error` blames that is not already dropped. */
+function missingOptionalColumn(
+  error: unknown,
+  omit: readonly OptionalColumn[],
+): OptionalColumn | undefined {
+  return OPTIONAL_COLUMNS.find(
+    (c) => !omit.includes(c) && isMissingColumn(error, c),
   );
+}
+
+interface QueryResult<T> {
+  data: T | null;
+  error: { code?: string; message?: string } | null;
+}
+
+/**
+ * Runs a select, dropping optional columns one at a time for as long as the
+ * database says they do not exist.
+ */
+export async function selectTolerantly<T>(
+  run: (columns: string) => PromiseLike<QueryResult<T>>,
+): Promise<QueryResult<T>> {
+  const omit: OptionalColumn[] = [];
+  for (;;) {
+    const result = await run(columnList(omit));
+    if (!result.error) return result;
+    const missing = missingOptionalColumn(result.error, omit);
+    if (!missing) return result;
+    omit.push(missing);
+  }
+}
+
+function isMissingYoutubeSourceColumn(error: unknown): boolean {
+  return isMissingColumn(error, "youtube_source");
 }
 
 async function insertSongRow(row: SongInsert): Promise<void> {
@@ -102,48 +158,22 @@ async function insertSongRow(row: SongInsert): Promise<void> {
   throw error;
 }
 
-async function selectSongRows() {
+function selectSongRows() {
   const supabase = createClient();
-  const query =
-    "id,title,artist,duration_sec,bpm,difficulty,tab_path,audio_path,tab_file_name,audio_file_names,youtube_source,created_at";
-  const fallbackQuery =
-    "id,title,artist,duration_sec,bpm,difficulty,tab_path,audio_path,tab_file_name,audio_file_names,created_at";
-
-  const result = await supabase
-    .from("songs")
-    .select(query)
-    .order("created_at", { ascending: false })
-    .returns<SongRow[]>();
-
-  if (!result.error || !isMissingYoutubeSourceColumn(result.error)) return result;
-
-  return supabase
-    .from("songs")
-    .select(fallbackQuery)
-    .order("created_at", { ascending: false })
-    .returns<SongRow[]>();
+  return selectTolerantly<SongRow[]>((columns) =>
+    supabase
+      .from("songs")
+      .select(columns)
+      .order("created_at", { ascending: false })
+      .returns<SongRow[]>(),
+  );
 }
 
-async function selectSongRow(songId: string) {
+function selectSongRow(songId: string) {
   const supabase = createClient();
-  const query =
-    "id,title,artist,duration_sec,bpm,difficulty,tab_path,audio_path,tab_file_name,audio_file_names,youtube_source,created_at";
-  const fallbackQuery =
-    "id,title,artist,duration_sec,bpm,difficulty,tab_path,audio_path,tab_file_name,audio_file_names,created_at";
-
-  const result = await supabase
-    .from("songs")
-    .select(query)
-    .eq("id", songId)
-    .single<SongRow>();
-
-  if (!result.error || !isMissingYoutubeSourceColumn(result.error)) return result;
-
-  return supabase
-    .from("songs")
-    .select(fallbackQuery)
-    .eq("id", songId)
-    .single<SongRow>();
+  return selectTolerantly<SongRow>((columns) =>
+    supabase.from("songs").select(columns).eq("id", songId).single<SongRow>(),
+  );
 }
 
 export function dispatchSupabaseSongsChanged(): void {
@@ -208,6 +238,59 @@ export async function uploadSongToAccount({
   };
   dispatchSupabaseSongsChanged();
   return persisted;
+}
+
+/**
+ * Stores a song's DTW mapping on its account row, so any device that opens the
+ * song later gets the alignment with it. Best-effort by design: the map is
+ * already saved locally by the time this runs, and a device-only song has no
+ * row to update (the write simply matches nothing).
+ *
+ * `null` clears the stored mapping. That case matters: without it, resetting a
+ * song's alignment here would leave the old map on the account, and the next
+ * open would helpfully restore the very thing the user just discarded.
+ */
+export async function saveSyncMapToAccount(
+  songId: string,
+  map: StoredSyncMap | null,
+): Promise<void> {
+  if (!isSupabaseConfigured()) return;
+  const supabase = createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return;
+
+  const { error } = await supabase
+    .from("songs")
+    .update({ sync_map: map })
+    .eq("id", songId);
+
+  if (error && isMissingColumn(error, "sync_map")) {
+    console.warn(
+      "[supabaseSongStore] songs.sync_map is missing — run supabase/schema.sql " +
+        "to keep alignment across devices.",
+    );
+    return;
+  }
+  if (error) throw error;
+}
+
+/** The stored mapping for a song on the current account, if the row has one. */
+export async function fetchSyncMapFromAccount(
+  songId: string,
+): Promise<StoredSyncMap | null> {
+  if (!isSupabaseConfigured()) return null;
+  const supabase = createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return null;
+
+  const { data, error } = await selectSongRow(songId);
+  if (error || !data) return null;
+  const map = data.sync_map;
+  return map && Array.isArray(map.points) && map.points.length >= 2 ? map : null;
 }
 
 /**
@@ -295,7 +378,7 @@ async function downloadAccountSongBlob(
 export async function hydrateSupabaseSong(songId: string): Promise<ImportedSong | null> {
   requireConfigured();
   const { data, error } = await selectSongRow(songId);
-  if (error) return null;
+  if (error || !data) return null;
 
   const song = toSong(data);
   const [tabBlob, audioBlob] = await Promise.all([
@@ -319,7 +402,7 @@ async function fetchSupabaseSongs(): Promise<ImportedSong[]> {
 
   const { data, error } = await selectSongRows();
   if (error) throw error;
-  return data.map(toSong);
+  return (data ?? []).map(toSong);
 }
 
 export function useSupabaseSongs(): ImportedSong[] {

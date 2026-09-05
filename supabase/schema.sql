@@ -20,6 +20,13 @@ create table if not exists public.songs (
 alter table public.songs
   add column if not exists youtube_source jsonb;
 
+-- The score<->audio mapping produced by DTW alignment (points, anchors, method,
+-- diagnostics). Stored with the song so a device that has never aligned it -- or
+-- one whose localStorage was cleared -- gets the map with the song instead of
+-- falling back to the linear offset.
+alter table public.songs
+  add column if not exists sync_map jsonb;
+
 alter table public.songs enable row level security;
 
 drop policy if exists "Users can read their songs" on public.songs;

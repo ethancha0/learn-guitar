@@ -35,8 +35,10 @@ import {
   patchAudioSync,
   type AudioSyncSettings,
   type ScoreAppearance,
+  applyRemoteSyncMap,
   type StoredSyncMap,
 } from "@/features/library/data/songStore";
+import { fetchSyncMapFromAccount } from "@/features/library/data/supabaseSongStore";
 import { getBackingAudio } from "@/features/player/data/audioStore";
 import {
   SPEED_PERCENT_MIN,
@@ -888,6 +890,75 @@ export function AlphaTabPlayer({
       window.removeEventListener(AUDIO_SYNC_EVENT, reload);
     };
   }, [songId]);
+
+  /**
+   * Make sure an opened song ends up with a real mapping.
+   *
+   * Import queues DTW in the tab that did the importing, so the run is lost if
+   * that tab is reloaded or closed mid-flight — and because the queue marks the
+   * song `pending` before starting, an interrupted run also leaves the player
+   * stuck behind its "Preparing synced playback" overlay for good. Songs
+   * imported where alignment is unavailable never get a map at all.
+   *
+   * So on open, when this device has no usable map: take the account's map if
+   * the song has one (solved on another device, or before localStorage was
+   * cleared), and otherwise run the alignment that never happened.
+   *
+   * `alignmentJob` only knows about runs from this page load, so `pending` with
+   * no job is exactly the interrupted case. The re-run is `force`d, which skips
+   * the queue's own `pending` write — a song that has never been aligned stays
+   * playable on the offset fallback while DTW works, and the map swaps in live
+   * when it lands, via the store event the effect above listens for.
+   */
+  const syncRecoveryRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!syncSettingsLoaded || !hasBacking || !tabData) return;
+    if ((storedSyncMap?.points.length ?? 0) >= 2) return;
+    if (syncRecoveryRef.current === songId) return;
+    syncRecoveryRef.current = songId;
+
+    // A run this page load started is already on its way; leave it alone.
+    const interrupted = dtwStatus === "pending" && !alignmentJob;
+    if (dtwStatus === "pending" && !interrupted) return;
+
+    let cancelled = false;
+    void (async () => {
+      const remote = await fetchSyncMapFromAccount(songId).catch(() => null);
+      if (cancelled) return;
+      if (remote) {
+        applyRemoteSyncMap(songId, remote);
+        return;
+      }
+      // A previous attempt that genuinely failed is not retried on every open —
+      // it costs a minute of CPU each time. The diagnostics panel can re-run it.
+      if (dtwStatus === "failed") return;
+
+      const blob = await getBackingAudio(songId);
+      if (cancelled || !blob) return;
+      await queueAlignment({
+        songId,
+        gpBytes: base64ToBytes(tabData),
+        audioBlob: blob,
+        scoreDurationSec,
+        audioDurationSec,
+        force: true,
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    songId,
+    tabData,
+    hasBacking,
+    syncSettingsLoaded,
+    storedSyncMap,
+    dtwStatus,
+    alignmentJob,
+    scoreDurationSec,
+    audioDurationSec,
+  ]);
 
   // Alignment progress reaches the UI through the same message channel as the
   // manual controls, so whichever acted last is what the panel shows.

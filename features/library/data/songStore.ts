@@ -3,7 +3,7 @@
 import { useSyncExternalStore } from "react";
 import type { Song } from "../types/song";
 import { songs as seedSongs, getSongById as getSeedSongById } from "./songs";
-import { useSupabaseSongs } from "./supabaseSongStore";
+import { useSupabaseSongs, saveSyncMapToAccount } from "./supabaseSongStore";
 import type { YouTubeSearchResult } from "@/lib/youtube/types";
 import type { SongsterrSource } from "@/lib/songsterr/types";
 
@@ -416,8 +416,8 @@ export function getAudioSync(songId: string): AudioSyncSettings | undefined {
   return readAudioSyncMap()[songId];
 }
 
-/** Shallow-merges `patch` into this song's stored sync settings. */
-export function patchAudioSync(
+/** Shallow-merges `patch` into this device's stored sync settings for a song. */
+function writeAudioSync(
   songId: string,
   patch: Partial<AudioSyncSettings>,
 ): void {
@@ -427,6 +427,41 @@ export function patchAudioSync(
   map[songId] = { ...current, ...patch };
   window.localStorage.setItem(AUDIO_SYNC_KEY, JSON.stringify(map));
   window.dispatchEvent(new Event(AUDIO_SYNC_EVENT));
+}
+
+/**
+ * Shallow-merges `patch` into this song's stored sync settings.
+ *
+ * A patch that carries a `syncMap` is also pushed to the song's account row, so
+ * a mapping solved once on this device travels with the song. That covers the
+ * DTW result and any anchor the user edits afterwards, since both land here.
+ * The push is fire-and-forget: the local write above is what playback reads,
+ * and a signed-out or device-only song simply has no row to update.
+ */
+export function patchAudioSync(
+  songId: string,
+  patch: Partial<AudioSyncSettings>,
+): void {
+  if (typeof window === "undefined") return;
+  writeAudioSync(songId, patch);
+  // `in` rather than a truthiness test: clearing the map is a change to push
+  // too, and it arrives as an explicit `syncMap: undefined`.
+  if ("syncMap" in patch) {
+    const map =
+      patch.syncMap && patch.syncMap.points.length >= 2 ? patch.syncMap : null;
+    void saveSyncMapToAccount(songId, map).catch((err) => {
+      console.error("[songStore] could not save sync map to account", err);
+    });
+  }
+}
+
+/**
+ * Installs a mapping fetched from the account onto this device. Unlike
+ * `patchAudioSync` this does not push back to the account — the map came from
+ * there, and echoing it would be a pointless round-trip on every open.
+ */
+export function applyRemoteSyncMap(songId: string, map: StoredSyncMap): void {
+  writeAudioSync(songId, { syncMap: map, offsetMs: 0, dtwStatus: "ready" });
 }
 
 function withStoredSyncMap(
