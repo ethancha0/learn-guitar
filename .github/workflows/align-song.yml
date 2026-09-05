@@ -8,8 +8,10 @@
 #
 # Required repository secrets:
 #   SUPABASE_URL                project URL
-#   SUPABASE_SERVICE_ROLE_KEY   service role key (bypasses RLS — this workflow
-#                               reaches a song by id with no user session)
+#   SUPABASE_SERVICE_ROLE_KEY   the project's secret key: `sb_secret_…`, or the
+#                               legacy `service_role` JWT. Bypasses RLS, which
+#                               this workflow needs — it reaches a song by id
+#                               with no user session. Not the publishable key.
 name: Align song
 
 on:

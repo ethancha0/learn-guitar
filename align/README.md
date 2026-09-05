@@ -234,8 +234,11 @@ a typical recording, so the app could not forward the mp3 even if it wanted to.
 
 1. Repository secrets (Settings → Secrets → Actions):
    - `SUPABASE_URL`
-   - `SUPABASE_SERVICE_ROLE_KEY` — service role, because the runner has no user
-     session and reaches a song by id alone. It bypasses RLS; treat it as such.
+   - `SUPABASE_SERVICE_ROLE_KEY` — the project's **secret** key (`sb_secret_…`
+     on the current key scheme, or the legacy `service_role` JWT). The runner
+     has no user session and reaches a song by id alone, so it needs the key
+     that bypasses RLS. Never the publishable/anon one, which cannot see
+     another user's row.
 2. Deployment environment variables:
    - `ALIGN_GITHUB_REPO` — `owner/repo`
    - `ALIGN_GITHUB_TOKEN` — fine-grained PAT with **contents: write** on that
