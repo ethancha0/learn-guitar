@@ -4,6 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { prepareAudioForAlignment } from "@/lib/youtube/metadata";
+import {
+  alignMode,
+  resolveAlignProvider,
+  type AlignWorkerConfig,
+} from "@/lib/align/provider";
 
 /**
  * Dev-only offline alignment endpoint.
@@ -11,15 +16,17 @@ import { prepareAudioForAlignment } from "@/lib/youtube/metadata";
  *   POST /api/align   (multipart: gp=<file>, audio=<file>, scoreDurationSec=<n>)
  *
  * Runs `align/gp-to-midi.mjs` then `align/align.py` (SyncToolbox MrMsDTW) in a
- * temp dir and returns the `sync.json` document. Disabled in production —
- * alignment is a preprocessing step, not a request-path concern. See
+ * temp dir and returns the `sync.json` document.
+ *
+ * Where that work happens depends on the host: locally it spawns node + python
+ * directly, and on a runtime with no Python it proxies the same request to an
+ * align worker (`ALIGN_WORKER_URL`). See `lib/align/provider.ts`, and
  * `align/README.md` for the Python setup.
  */
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const IS_DEV = process.env.NODE_ENV !== "production";
 const PYTHON = process.env.ALIGN_PYTHON || "python3";
 const TIMEOUT_MS = 240_000;
 
@@ -48,11 +55,57 @@ function run(
   });
 }
 
-export async function POST(request: Request) {
-  if (!IS_DEV) {
+/**
+ * Hands the request to the align worker unchanged. The worker runs the same
+ * two steps against the same `sync.json` contract, so its response is passed
+ * straight back rather than reshaped here.
+ */
+async function proxyToWorker(
+  config: AlignWorkerConfig,
+  form: FormData,
+): Promise<Response> {
+  try {
+    const res = await fetch(`${config.baseUrl}/align`, {
+      method: "POST",
+      body: form,
+      headers: config.token ? { Authorization: `Bearer ${config.token}` } : {},
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    const text = await res.text();
+    return new NextResponse(text, {
+      status: res.status,
+      headers: { "content-type": "application/json" },
+    });
+  } catch (err) {
     return NextResponse.json(
-      { status: "failed", message: "Alignment endpoint is disabled in production." },
-      { status: 404 },
+      {
+        status: "failed",
+        stage: "worker",
+        message: `Align worker unreachable: ${(err as Error).message}`,
+      },
+      { status: 502 },
+    );
+  }
+}
+
+/**
+ * How this deployment can align, so the client knows what to send. Cheap and
+ * side-effect free; the browser caches the answer for the session.
+ */
+export async function GET() {
+  const provider = resolveAlignProvider();
+  return NextResponse.json({
+    mode: alignMode(provider),
+    message: provider.kind === "unavailable" ? provider.message : undefined,
+  });
+}
+
+export async function POST(request: Request) {
+  const provider = resolveAlignProvider();
+  if (provider.kind === "unavailable") {
+    return NextResponse.json(
+      { status: "failed", stage: "config", message: provider.message },
+      { status: 501 },
     );
   }
 
@@ -74,6 +127,23 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
+  if (provider.kind === "worker") {
+    return proxyToWorker(provider.config, form);
+  }
+
+  if (provider.kind === "dispatch") {
+    return NextResponse.json(
+      {
+        status: "failed",
+        stage: "config",
+        message:
+          "This deployment aligns by GitHub Action. POST { songId } to " +
+          "/api/align/dispatch instead of uploading the files here.",
+      },
+      { status: 409 },
+    );
+  }
+
   const scoreDurationSec = Number(form.get("scoreDurationSec")) || undefined;
   const anchorsRaw = form.get("anchors");
   const anchors = typeof anchorsRaw === "string" ? anchorsRaw : undefined;

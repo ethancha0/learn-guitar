@@ -22,15 +22,18 @@ import {
   type SyncAnchor,
 } from "@/features/library/data/songStore";
 import { DtwSyncGenerator } from "./syncGenerator";
+import { alignCapability } from "./alignCapability";
+import { fetchSyncMapFromAccount } from "@/features/library/data/supabaseSongStore";
+import { applyRemoteSyncMap } from "@/features/library/data/songStore";
 
 /**
- * `/api/align` is disabled in production, so there is nothing to queue there.
- * Exported because the UI has to hide the controls that would call it — the
- * diagnostics panel is reachable in production now (see
- * `syncDiagnosticsFlag.ts`), and a button that can only 404 is worse than no
- * button.
+ * How long to watch the account row for a map CI is solving, and how often.
+ * A cold runner spends a couple of minutes installing before it aligns at all.
+ * Giving up only stops the watching — the run continues, and the map is picked
+ * up on the next open either way.
  */
-export const ALIGNMENT_ENABLED = process.env.NODE_ENV !== "production";
+const DISPATCH_POLL_MS = 10_000;
+const DISPATCH_TIMEOUT_MS = 10 * 60_000;
 
 export interface AlignmentJob {
   songId: string;
@@ -79,9 +82,9 @@ let chain: Promise<unknown> = Promise.resolve();
 export function queueAlignment(
   req: AlignmentRequest,
 ): Promise<AlignmentJob | null> {
-  if (!ALIGNMENT_ENABLED || typeof window === "undefined") {
-    return Promise.resolve(null);
-  }
+  // Whether alignment is possible is the server's answer, not a build flag;
+  // `align` asks and reports the reason if it is not. See `alignCapability`.
+  if (typeof window === "undefined") return Promise.resolve(null);
 
   const active = jobs.get(req.songId);
   if (active?.state === "queued" || active?.state === "running") {
@@ -97,7 +100,88 @@ export function queueAlignment(
   return run;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Alignment by GitHub Action: ask the server to fire the run, then watch the
+ * song's account row for the map the workflow writes.
+ *
+ * Nothing is uploaded — the workflow pulls the files from storage itself — so
+ * the recording never has to fit through a serverless request body.
+ */
+async function alignByDispatch(req: AlignmentRequest): Promise<AlignmentJob> {
+  const res = await fetch("/api/align/dispatch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ songId: req.songId }),
+  }).catch((err: Error) => err);
+
+  if (res instanceof Error) {
+    patchAudioSync(req.songId, { dtwStatus: "failed" });
+    return setJob(req.songId, {
+      state: "failed",
+      message: `Could not queue alignment: ${res.message}`,
+    });
+  }
+  if (!res.ok) {
+    const detail = await res
+      .json()
+      .then((d: { message?: string }) => d.message)
+      .catch(() => undefined);
+    patchAudioSync(req.songId, { dtwStatus: "failed" });
+    return setJob(req.songId, {
+      state: "failed",
+      message: detail ?? `Could not queue alignment (${res.status}).`,
+    });
+  }
+
+  // Handed off. Stop holding the player behind the import overlay: the run
+  // takes minutes, and the song is perfectly usable on the offset fallback
+  // until the real map arrives.
+  patchAudioSync(req.songId, { dtwStatus: "queued" });
+  setJob(req.songId, {
+    state: "running",
+    message: "Aligning on CI… the map will appear when the run finishes.",
+  });
+
+  const deadline = Date.now() + DISPATCH_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await sleep(DISPATCH_POLL_MS);
+    const map = await fetchSyncMapFromAccount(req.songId).catch(() => null);
+    if (map) {
+      applyRemoteSyncMap(req.songId, map);
+      return setJob(req.songId, {
+        state: "done",
+        message: `Aligned on CI: ${map.points.length} points via ${map.method}.`,
+      });
+    }
+  }
+
+  // The run may yet succeed; this only stops watching. `failed` keeps the next
+  // open from firing a second run, and that open checks the account first, so a
+  // late map is still picked up.
+  patchAudioSync(req.songId, { dtwStatus: "failed" });
+  return setJob(req.songId, {
+    state: "failed",
+    message:
+      "Alignment is taking longer than expected. If the CI run succeeds the " +
+      "map will be there next time you open this song.",
+  });
+}
+
 async function align(req: AlignmentRequest): Promise<AlignmentJob> {
+  const capability = await alignCapability();
+  if (capability.mode === "unavailable") {
+    patchAudioSync(req.songId, { dtwStatus: "failed" });
+    return setJob(req.songId, {
+      state: "failed",
+      message: capability.message ?? "Alignment is not available here.",
+    });
+  }
+  if (capability.mode === "dispatch") return alignByDispatch(req);
+
   setJob(req.songId, {
     state: "running",
     message: "Running DTW alignment… (this can take a minute)",

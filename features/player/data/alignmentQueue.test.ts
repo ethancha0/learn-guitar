@@ -1,5 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AlignmentRequest } from "./alignmentQueue";
+import type { StoredSyncMap } from "@/features/library/data/songStore";
+
+/**
+ * The queue reaches Supabase to save maps and to watch for one CI is solving.
+ * Neither belongs in these tests, so the module is stubbed for the whole file
+ * and the dispatch test drives `fetchSyncMapFromAccount` directly.
+ */
+const fetchSyncMapFromAccount = vi.fn<() => Promise<StoredSyncMap | null>>();
+vi.mock("@/features/library/data/supabaseSongStore", () => ({
+  fetchSyncMapFromAccount: () => fetchSyncMapFromAccount(),
+  saveSyncMapToAccount: async () => undefined,
+  useSupabaseSongs: () => [],
+}));
 
 /**
  * The queue and the sync store are both module-level singletons, so every test
@@ -37,18 +50,39 @@ function request(songId: string): AlignmentRequest {
   };
 }
 
-/** Stands in for `POST /api/align`; resolves when the test says so. */
-function mockAlignEndpoint(body: Record<string, unknown>) {
-  const calls: Array<{ release: () => void }> = [];
-  const fetchMock = vi.fn(async () => {
+/**
+ * Stands in for the align endpoint. `GET /api/align` is the capability probe
+ * and answers at once; the alignment run itself is gated so a test can hold it
+ * open and assert on the in-flight state.
+ */
+function mockAlignEndpoint(
+  body: Record<string, unknown>,
+  capability: { mode: string; message?: string } = { mode: "local" },
+) {
+  const calls: Array<{ release: () => void; url: string }> = [];
+  const fetchMock = vi.fn(async (input: unknown, init?: { method?: string }) => {
+    if (!init?.method || init.method === "GET") {
+      return { ok: true, json: async () => capability } as unknown as Response;
+    }
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));
-    calls.push({ release });
+    calls.push({ release, url: String(input) });
     await gate;
-    return { ok: true, json: async () => body } as unknown as Response;
+    return {
+      ok: true,
+      status: 202,
+      json: async () => body,
+    } as unknown as Response;
   });
   vi.stubGlobal("fetch", fetchMock);
   return { calls, fetchMock };
+}
+
+/** Only the align run, ignoring the capability probe that precedes it. */
+function alignCalls(fetchMock: { mock: { calls: unknown[][] } }) {
+  return fetchMock.mock.calls.filter(
+    (c) => (c[1] as { method?: string } | undefined)?.method,
+  );
 }
 
 const OK_RESPONSE = {
@@ -70,6 +104,7 @@ describe("queueAlignment", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
+    fetchSyncMapFromAccount.mockReset();
   });
 
   it("stores the returned mapping and clears the manual offset", async () => {
@@ -183,12 +218,68 @@ describe("queueAlignment", () => {
     expect(songStore.getAudioSync("song")?.dtwStatus).toBe("failed");
   });
 
-  it("does nothing in production, where /api/align is disabled", async () => {
+  /**
+   * This used to assert the opposite: in production the queue returned `null`
+   * without asking anyone. That is precisely what made a misconfigured
+   * deployment indistinguishable from a working one — no request, no error, no
+   * map. The server is asked now, and its reason is reported.
+   */
+  it("reports the server's reason when alignment is unavailable", async () => {
     vi.stubEnv("NODE_ENV", "production");
-    const { queue } = await load();
-    const { fetchMock } = mockAlignEndpoint(OK_RESPONSE);
+    const { queue, songStore } = await load();
+    mockAlignEndpoint(OK_RESPONSE, {
+      mode: "unavailable",
+      message: "Set ALIGN_GITHUB_REPO to align by GitHub Action.",
+    });
 
-    expect(await queue.queueAlignment(request("song"))).toBeNull();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await queue.queueAlignment(request("song"))).toMatchObject({
+      state: "failed",
+      message: "Set ALIGN_GITHUB_REPO to align by GitHub Action.",
+    });
+    // Not left `pending`, which would hold the player behind its overlay.
+    expect(songStore.getAudioSync("song")?.dtwStatus).toBe("failed");
+  });
+
+  it("hands off to CI and installs the map the run writes", async () => {
+    vi.useFakeTimers();
+    try {
+      const { queue, songStore } = await load();
+      const { calls, fetchMock } = mockAlignEndpoint(
+        { status: "queued" },
+        { mode: "dispatch" },
+      );
+      const remote: StoredSyncMap = {
+        points: OK_RESPONSE.points,
+        method: "dtw:mrmsdtw",
+        status: "ok",
+        createdAt: Date.now(),
+      };
+      // Nothing there on the first look; the run lands before the second.
+      fetchSyncMapFromAccount
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(remote);
+
+      const done = queue.queueAlignment(request("song"));
+
+      // The dispatch POST carries the id only — never the recording, which
+      // would not fit through a serverless request body.
+      await vi.waitFor(() => expect(alignCalls(fetchMock)).toHaveLength(1));
+      const [url, init] = alignCalls(fetchMock)[0] as [string, { body: string }];
+      expect(url).toBe("/api/align/dispatch");
+      expect(JSON.parse(init.body)).toEqual({ songId: "song" });
+      calls[0].release();
+
+      // Queued, not pending: a multi-minute CI run must not block playback.
+      await vi.waitFor(() =>
+        expect(songStore.getAudioSync("song")?.dtwStatus).toBe("queued"),
+      );
+
+      await vi.advanceTimersByTimeAsync(25_000);
+      expect(await done).toMatchObject({ state: "done" });
+      expect(songStore.getAudioSync("song")?.syncMap?.points).toHaveLength(2);
+      expect(songStore.getAudioSync("song")?.dtwStatus).toBe("ready");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

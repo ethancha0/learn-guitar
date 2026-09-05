@@ -391,8 +391,13 @@ export interface AudioSyncSettings {
   /**
    * Import-time DTW readiness. New imports hold the player until this leaves
    * `pending`; manual retries do not need to block an already usable song.
+   *
+   * `queued` means the run was handed to CI (see the GitHub Action path in
+   * `alignmentQueue`). That is deliberately *not* blocking: the run takes
+   * minutes, so the song stays playable on the offset fallback and the map
+   * swaps in when it lands.
    */
-  dtwStatus?: "pending" | "ready" | "failed";
+  dtwStatus?: "pending" | "queued" | "ready" | "failed";
   /** Persisted "original recording" channel state. */
   backingVol?: number;
   backingMuted?: boolean;

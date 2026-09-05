@@ -204,6 +204,62 @@ bar/beat positions, within a tempo-derived window, and only when a shift agrees
 with its neighbours — but under hold-out scoring it showed no generalisation
 benefit, so it stays off until a real song says otherwise.
 
+## Running it in production (GitHub Actions)
+
+`align.py` needs Python, SyncToolbox and fluidsynth. A managed serverless
+runtime has none of them, which is the same wall `services/yt-dlp-worker`
+exists to get around. Alignment differs in one useful way though: it is a
+preprocessing step with no one waiting on it, so it can be handed to a CI
+runner instead of a server that has to stay up.
+
+```
+import ──▶ POST /api/align/dispatch { songId }
+                    │
+                    └─▶ repository_dispatch ──▶ .github/workflows/align-song.yml
+                                                    │  apt: fluidsynth + GM soundfont
+                                                    │  pip: align/requirements.txt
+                                                    │  scripts/align-song.mjs
+                                                    │    • pulls tab + mp3 from Supabase storage
+                                                    │    • gp-to-midi.mjs, then align.py
+                                                    └────• PATCH songs.sync_map
+                                                             │
+   player polls the row, and reads it on next open ◀─────────┘
+```
+
+Only the song id crosses the wire. The runner fetches the files from storage
+itself, which matters: a serverless request body limit is well under the size of
+a typical recording, so the app could not forward the mp3 even if it wanted to.
+
+**Setup**
+
+1. Repository secrets (Settings → Secrets → Actions):
+   - `SUPABASE_URL`
+   - `SUPABASE_SERVICE_ROLE_KEY` — service role, because the runner has no user
+     session and reaches a song by id alone. It bypasses RLS; treat it as such.
+2. Deployment environment variables:
+   - `ALIGN_GITHUB_REPO` — `owner/repo`
+   - `ALIGN_GITHUB_TOKEN` — fine-grained PAT with **contents: write** on that
+     repo (the permission `repository_dispatch` requires)
+3. Run `supabase/schema.sql` if you have not already: the workflow writes to
+   `songs.sync_map`, which the later migration adds.
+4. Commit the workflow to the **default branch**. `repository_dispatch` only
+   ever starts runs from there, so a workflow living on a feature branch is
+   dispatched successfully and then does nothing.
+
+`GET /api/align` reports which mode is live (`local`, `dispatch`,
+`unavailable`), and the diagnostics panel shows the reason when alignment is
+unavailable rather than silently doing nothing.
+
+**Worth knowing.** GitHub scopes Actions to building, testing and deploying the
+repository's own project. Using runners as a compute backend for app traffic is
+outside that, which is fine at personal-project volume and a real risk at
+product volume. `ALIGN_WORKER_URL` is the escape hatch: point it at any HTTP
+service that answers the same `sync.json` contract (Fly, Modal, Cloud Run) and
+the app proxies to it instead, with no other change.
+
+To re-align a song by hand, run the workflow from the Actions tab with the song
+id as input.
+
 ## Run via the app (dev only)
 
 `npm run dev`, open a song in the player, open the **Sync diagnostics** panel

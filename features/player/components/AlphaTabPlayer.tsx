@@ -933,9 +933,12 @@ export function AlphaTabPlayer({
         applyRemoteSyncMap(songId, remote);
         return;
       }
-      // A previous attempt that genuinely failed is not retried on every open —
-      // it costs a minute of CPU each time. The diagnostics panel can re-run it.
-      if (dtwStatus === "failed") return;
+      // Don't start a second run. `failed` is not retried on every open (it
+      // costs a minute of CPU each time), and `queued` means CI already has
+      // this song — re-dispatching would supersede the run in flight and it
+      // would never finish for someone who keeps reopening the song. Both
+      // still benefit from the account check above. The panel can re-run.
+      if (dtwStatus === "failed" || dtwStatus === "queued") return;
 
       const blob = await getBackingAudio(songId);
       if (cancelled || !blob) return;

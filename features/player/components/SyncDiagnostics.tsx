@@ -8,7 +8,7 @@ import { cn } from "@/lib/cn";
 import type { SyncAnchor } from "@/features/library/data/songStore";
 import type { SyncMap } from "@/features/player/data/syncMap";
 import type { SyncVerifyReport } from "@/features/player/data/syncVerify";
-import { ALIGNMENT_ENABLED } from "@/features/player/data/alignmentQueue";
+import { useAlignCapability } from "@/features/player/data/alignCapability";
 
 /** An anchor counts as honoured when the live map lands this close to it. */
 const ANCHOR_TOLERANCE_MS = 20;
@@ -66,6 +66,7 @@ export function SyncDiagnostics({
   message,
   onClose,
 }: SyncDiagnosticsProps) {
+  const alignment = useAlignCapability();
   const [tick, setTick] = useState(0);
   const [verify, setVerify] = useState<
     SyncVerifyReport | { error: string } | null
@@ -310,21 +311,29 @@ export function SyncDiagnostics({
             )}
           </div>
         )}
-        {ALIGNMENT_ENABLED ? (
+        {alignment.mode !== "unavailable" ? (
           <Button
             variant="outline"
             size="sm"
             onClick={onRunDtw}
             disabled={dtwRunning}
           >
-            {dtwRunning ? "Aligning… (DTW)" : "Run DTW alignment"}
+            {dtwRunning
+              ? "Aligning… (DTW)"
+              : alignment.mode === "dispatch"
+                ? "Run DTW alignment (on CI)"
+                : "Run DTW alignment"}
           </Button>
         ) : (
           <p className="text-[11px] leading-snug text-zinc-500">
-            Re-running DTW alignment needs the local Python pipeline behind{" "}
-            <code>/api/align</code>, which is disabled in this build. The map
-            shown here is whatever was solved on a development machine and
-            saved to the account.
+            {alignment.message ??
+              "Alignment is not available on this deployment."}
+          </p>
+        )}
+        {alignment.mode === "dispatch" && (
+          <p className="text-[11px] leading-snug text-zinc-500">
+            Alignment runs on GitHub Actions and takes a few minutes. The map
+            appears here when the run finishes, or next time you open the song.
           </p>
         )}
         {message && (

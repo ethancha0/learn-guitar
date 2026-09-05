@@ -1,0 +1,71 @@
+# DTW alignment for one imported song.
+#
+# The deployed app has no Python, so it cannot run align.py itself. It fires a
+# repository_dispatch (see app/api/align/dispatch/route.ts) and this workflow
+# does the work on a runner that has apt: fluidsynth, a GM soundfont and the
+# SyncToolbox stack. The map is written straight back to the song's Supabase
+# row, which is where the player reads it from.
+#
+# Required repository secrets:
+#   SUPABASE_URL                project URL
+#   SUPABASE_SERVICE_ROLE_KEY   service role key (bypasses RLS — this workflow
+#                               reaches a song by id with no user session)
+name: Align song
+
+on:
+  repository_dispatch:
+    types: [align-song]
+  # Same job, run by hand — useful for re-aligning a song after a bad import.
+  workflow_dispatch:
+    inputs:
+      songId:
+        description: Song id to align
+        required: true
+
+# One run per song; a newer request for the same song supersedes an older one.
+concurrency:
+  group: align-${{ github.event.client_payload.songId || inputs.songId }}
+  cancel-in-progress: true
+
+jobs:
+  align:
+    runs-on: ubuntu-latest
+    # gp-to-midi + a full DTW solve; the cap is a backstop, not a target.
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      # gp-to-midi.mjs parses the tab with alphaTab, the same parser playback
+      # uses, so the score timeline it emits matches what the player renders.
+      - name: Install Node dependencies
+        run: npm ci
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: align/requirements.txt
+
+      # fluidsynth renders the score to audio for the DTW comparison, and
+      # fluid-soundfont-gm ships the FluidR3_GM soundfont it renders with.
+      - name: Install fluidsynth and a GM soundfont
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fluidsynth fluid-soundfont-gm
+
+      - name: Install Python dependencies
+        run: pip install -r align/requirements.txt
+
+      - name: Align
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ALIGN_SOUNDFONT: /usr/share/sounds/sf2/FluidR3_GM.sf2
+        run: |
+          node scripts/align-song.mjs "${{ github.event.client_payload.songId || inputs.songId }}"
