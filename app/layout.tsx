@@ -43,7 +43,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${spectral.variable} ${plexMono.variable}`}>
+    <html
+      lang="en"
+      className={`${spectral.variable} ${plexMono.variable}`}
+      suppressHydrationWarning
+    >
       <head>
         {/* Resolves the theme class before first paint so the app never
             flashes Paper on its way to Lamp. */}

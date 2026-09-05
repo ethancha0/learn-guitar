@@ -2,6 +2,8 @@
 
 import { useRef, useState, type DragEvent } from "react";
 import { useRouter } from "next/navigation";
+import * as DialogPrimitive from "@radix-ui/react-dialog";
+import { AnimatePresence, motion } from "motion/react";
 import {
   AudioLines,
   Check,
@@ -10,6 +12,7 @@ import {
   Guitar,
   Loader2,
   Search,
+  X,
   Youtube,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -17,7 +20,7 @@ import { Input } from "@/components/ui/Input";
 import {
   Dialog,
   DialogTrigger,
-  DialogContent,
+  DialogPortal,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -45,6 +48,34 @@ import type {
 import { tuningLabel } from "@/lib/songsterr/tuning";
 import type { Song } from "../types/song";
 import { formatDuration } from "./formatDuration";
+
+const MotionButton = motion.create(Button);
+
+const overlayVariants = {
+  hidden: { opacity: 0 },
+  show: { opacity: 1 },
+};
+
+const modalVariants = {
+  hidden: { opacity: 0, y: 14, scale: 0.98 },
+  show: { opacity: 1, y: 0, scale: 1 },
+};
+
+const listVariants = {
+  hidden: {},
+  show: {
+    transition: {
+      staggerChildren: 0.05,
+    },
+  },
+};
+
+const rowVariants = {
+  hidden: { opacity: 0, y: 8 },
+  show: { opacity: 1, y: 0 },
+};
+
+type ImportStage = "compose" | "generating" | "success";
 
 const TAB_EXTENSIONS = [
   ".gp",
@@ -115,6 +146,10 @@ function fileNameFromContentDisposition(value: string | null): string | null {
   if (quoted?.[1]) return quoted[1];
   const plain = value.match(/filename=([^;]+)/i);
   return plain?.[1]?.trim() ?? null;
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 /** `X-Songsterr-Part-Ids` is the Songsterr track index of each track in the GP file. */
@@ -241,16 +276,18 @@ function DropZone({
         )
       )}
 
-      <Button
+      <MotionButton
         type="button"
         variant="outline"
         size="sm"
         className="mt-2"
         disabled={busy}
         onClick={() => inputRef.current?.click()}
+        whileHover={busy ? undefined : { scale: 1.02 }}
+        whileTap={busy ? undefined : { scale: 0.98 }}
       >
         Browse…
-      </Button>
+      </MotionButton>
       <input
         ref={inputRef}
         type="file"
@@ -264,9 +301,129 @@ function DropZone({
   );
 }
 
+function SearchSkeletonRows({ count = 3 }: { count?: number }) {
+  return (
+    <div className="space-y-2" aria-hidden="true">
+      {Array.from({ length: count }).map((_, index) => (
+        <motion.div
+          key={index}
+          className="rounded-sm border border-rule bg-paper p-2"
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.18, ease: "easeOut", delay: index * 0.04 }}
+        >
+          <motion.div
+            className="h-3.5 w-3/4 bg-ink/10"
+            animate={{ opacity: [0.35, 0.8, 0.35] }}
+            transition={{ duration: 1.05, repeat: Infinity, ease: "easeInOut" }}
+          />
+          <motion.div
+            className="mt-2 h-2.5 w-1/2 bg-ink/10"
+            animate={{ opacity: [0.25, 0.65, 0.25] }}
+            transition={{
+              duration: 1.05,
+              repeat: Infinity,
+              ease: "easeInOut",
+              delay: 0.08,
+            }}
+          />
+        </motion.div>
+      ))}
+    </div>
+  );
+}
+
+function GeneratingState() {
+  return (
+    <motion.div
+      key="generating"
+      className="flex min-h-[360px] flex-col items-center justify-center gap-5 text-center"
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      transition={{ duration: 0.2, ease: "easeOut" }}
+    >
+      <div className="flex h-14 w-14 items-end justify-center gap-1 border border-rule bg-paper px-3 py-3">
+        {[0, 1, 2, 3].map((i) => (
+          <motion.span
+            key={i}
+            className="w-1.5 bg-accent"
+            animate={{ height: ["35%", "100%", "45%"] }}
+            transition={{
+              duration: 0.72,
+              repeat: Infinity,
+              ease: "easeInOut",
+              delay: i * 0.08,
+            }}
+          />
+        ))}
+      </div>
+      <div className="space-y-1">
+        <p className="font-display text-2xl font-bold text-ink">
+          Generating tab…
+        </p>
+        <p className="font-display text-sm italic text-ink-muted">
+          Saving the chart and preparing synced playback.
+        </p>
+      </div>
+      <div className="h-1 w-64 overflow-hidden bg-track">
+        <motion.div
+          className="h-full w-1/2 bg-accent"
+          animate={{ x: ["-100%", "220%"] }}
+          transition={{ duration: 1, repeat: Infinity, ease: "easeInOut" }}
+        />
+      </div>
+    </motion.div>
+  );
+}
+
+function SuccessState() {
+  return (
+    <motion.div
+      key="success"
+      className="flex min-h-[360px] flex-col items-center justify-center gap-5 text-center"
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.98 }}
+      transition={{ duration: 0.2, ease: "easeOut" }}
+    >
+      <motion.div
+        className="grid h-16 w-16 place-items-center border border-accent bg-accent-wash text-accent"
+        initial={{ scale: 0.88 }}
+        animate={{ scale: 1 }}
+        transition={{ type: "spring", stiffness: 360, damping: 22 }}
+      >
+        <motion.svg
+          viewBox="0 0 24 24"
+          className="h-8 w-8"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <motion.path
+            d="M20 6 9 17l-5-5"
+            initial={{ pathLength: 0 }}
+            animate={{ pathLength: 1 }}
+            transition={{ duration: 0.28, ease: "easeOut", delay: 0.05 }}
+          />
+        </motion.svg>
+      </motion.div>
+      <div className="space-y-1">
+        <p className="font-display text-2xl font-bold text-ink">Ready</p>
+        <p className="font-display text-sm italic text-ink-muted">
+          Opening the player.
+        </p>
+      </div>
+    </motion.div>
+  );
+}
+
 export function ImportSongDialog() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  const [stage, setStage] = useState<ImportStage>("compose");
   const [tabFiles, setTabFiles] = useState<File[]>([]);
   const [audioFiles, setAudioFiles] = useState<File[]>([]);
   const [youtubeQuery, setYoutubeQuery] = useState("");
@@ -330,12 +487,14 @@ export function ImportSongDialog() {
     songsterrDownloadIdRef.current = null;
     setBusy(false);
     setError(null);
+    setStage("compose");
   }
 
   async function handleFinish() {
     if (!ready || busy) return;
     setBusy(true);
     setError(null);
+    setStage("generating");
 
     try {
       const tabFile = tabFiles[0];
@@ -447,11 +606,14 @@ export function ImportSongDialog() {
           durationSec || selectedYoutube?.durationSec || undefined,
       });
 
+      setStage("success");
+      await wait(520);
       setOpen(false);
       reset();
       router.push(`/player/${savedSong.id}`);
     } catch (err) {
       setBusy(false);
+      setStage("compose");
       setError(
         isQuotaExceededError(err)
           ? "That tab file is too large to store locally."
@@ -670,21 +832,68 @@ export function ImportSongDialog() {
     <Dialog
       open={open}
       onOpenChange={(next) => {
+        if (!next && stage !== "compose") return;
         setOpen(next);
         if (!next) reset();
       }}
     >
       <DialogTrigger asChild>
-        <Button>
+        <MotionButton whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>
           <FileMusic className="h-4 w-4" />
           Import song
-        </Button>
+        </MotionButton>
       </DialogTrigger>
 
-      <DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Add a new song</DialogTitle>
-        </DialogHeader>
+      <AnimatePresence>
+        {open && (
+          <DialogPortal forceMount>
+            <DialogPrimitive.Overlay asChild forceMount>
+              <motion.div
+                className="fixed inset-0 z-50 bg-ink/60"
+                variants={overlayVariants}
+                initial="hidden"
+                animate="show"
+                exit="hidden"
+                transition={{ duration: 0.18, ease: "easeOut" }}
+              />
+            </DialogPrimitive.Overlay>
+            <DialogPrimitive.Content asChild forceMount>
+              <motion.div
+                layout
+                className="fixed left-1/2 top-1/2 z-50 grid max-h-[88vh] w-full max-w-3xl -translate-x-1/2 -translate-y-1/2 gap-5 overflow-y-auto rounded-sm border border-rule-strong bg-paper-raised p-8 focus:outline-none"
+                variants={modalVariants}
+                initial="hidden"
+                animate="show"
+                exit="hidden"
+                transition={{ duration: 0.2, ease: "easeOut" }}
+              >
+                {stage === "compose" && (
+                  <DialogPrimitive.Close
+                    className="absolute right-5 top-5 rounded-sm p-1 text-ink-faint transition-colors hover:text-ink focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                    aria-label="Close"
+                  >
+                    <X className="h-4 w-4" />
+                  </DialogPrimitive.Close>
+                )}
+
+                <AnimatePresence mode="wait">
+                  {stage === "generating" ? (
+                    <GeneratingState />
+                  ) : stage === "success" ? (
+                    <SuccessState />
+                  ) : (
+                    <motion.div
+                      key="compose"
+                      layout
+                      className="grid gap-5"
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -8 }}
+                      transition={{ duration: 0.18, ease: "easeOut" }}
+                    >
+                      <DialogHeader>
+                        <DialogTitle>Add a new song</DialogTitle>
+                      </DialogHeader>
 
         <div className="grid gap-4 sm:grid-cols-2">
           <DropZone
@@ -754,11 +963,21 @@ export function ImportSongDialog() {
                 className="pl-9"
               />
             </div>
-            <Button
+            <MotionButton
               type="button"
               variant="outline"
               onClick={() => void handleSongsterrLookup()}
               disabled={songsterrLoading || !songsterrQuery.trim()}
+              whileHover={
+                songsterrLoading || !songsterrQuery.trim()
+                  ? undefined
+                  : { scale: 1.02 }
+              }
+              whileTap={
+                songsterrLoading || !songsterrQuery.trim()
+                  ? undefined
+                  : { scale: 0.98 }
+              }
             >
               {songsterrLoading ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -766,7 +985,7 @@ export function ImportSongDialog() {
                 <Search className="h-4 w-4" />
               )}
               Look up
-            </Button>
+            </MotionButton>
           </div>
 
           {songsterrError && (
@@ -775,15 +994,38 @@ export function ImportSongDialog() {
             </p>
           )}
 
+          <AnimatePresence mode="wait">
+            {songsterrLoading && songsterrResults.length === 0 && (
+              <motion.div
+                key="songsterr-loading"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.16 }}
+              >
+                <SearchSkeletonRows />
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           {songsterrResults.length > 0 && (
-            <div className="max-h-56 space-y-2 overflow-y-auto pr-1">
+            <motion.div
+              className="max-h-56 space-y-2 overflow-y-auto pr-1"
+              variants={listVariants}
+              initial="hidden"
+              animate="show"
+            >
               {songsterrResults.map((result) => {
                 const bass = result.tracks.find((t) => t.family === "bass");
                 return (
-                  <button
+                  <motion.button
                     key={result.songId}
                     type="button"
                     onClick={() => void handleSongsterrPick(result)}
+                    variants={rowVariants}
+                    whileHover={{ scale: 1.01, borderColor: "rgb(var(--accent))" }}
+                    whileTap={{ scale: 0.99 }}
+                    transition={{ duration: 0.18, ease: "easeOut" }}
                     className="w-full rounded-sm border border-rule bg-paper p-2 text-left transition-colors hover:border-accent"
                   >
                     <p className="truncate text-sm font-medium text-zinc-100">
@@ -793,10 +1035,10 @@ export function ImportSongDialog() {
                       {result.artist}
                       {bass ? ` · bass ${tuningLabel(bass.tuning) ?? ""}` : ""}
                     </p>
-                  </button>
+                  </motion.button>
                 );
               })}
-            </div>
+            </motion.div>
           )}
 
           {songsterrSong && (
@@ -857,15 +1099,17 @@ export function ImportSongDialog() {
                   <p className="text-sm text-accent" role="alert">
                     {tabError}
                   </p>
-                  <Button
+                  <MotionButton
                     type="button"
                     variant="outline"
                     size="sm"
                     onClick={() => void downloadSongsterrTab(songsterrSong)}
                     disabled={tabDownloading}
+                    whileHover={tabDownloading ? undefined : { scale: 1.02 }}
+                    whileTap={tabDownloading ? undefined : { scale: 0.98 }}
                   >
                     Retry download
-                  </Button>
+                  </MotionButton>
                 </div>
               )}
 
@@ -914,11 +1158,21 @@ export function ImportSongDialog() {
                 className="pl-9"
               />
             </div>
-            <Button
+            <MotionButton
               type="button"
               variant="outline"
               onClick={() => void handleYoutubeSearch()}
               disabled={youtubeSearching || !youtubeQuery.trim()}
+              whileHover={
+                youtubeSearching || !youtubeQuery.trim()
+                  ? undefined
+                  : { scale: 1.02 }
+              }
+              whileTap={
+                youtubeSearching || !youtubeQuery.trim()
+                  ? undefined
+                  : { scale: 0.98 }
+              }
             >
               {youtubeSearching ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -926,7 +1180,7 @@ export function ImportSongDialog() {
                 <Search className="h-4 w-4" />
               )}
               Search
-            </Button>
+            </MotionButton>
           </div>
 
           {youtubeError && (
@@ -935,15 +1189,45 @@ export function ImportSongDialog() {
             </p>
           )}
 
+          <AnimatePresence mode="wait">
+            {youtubeSearching && youtubeResults.length === 0 && (
+              <motion.div
+                key="youtube-loading"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.16 }}
+              >
+                <SearchSkeletonRows />
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           {youtubeResults.length > 0 && (
-            <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+            <motion.div
+              className="max-h-64 space-y-2 overflow-y-auto pr-1"
+              variants={listVariants}
+              initial="hidden"
+              animate="show"
+            >
               {youtubeResults.map((result) => {
                 const selected = selectedYoutube?.videoId === result.videoId;
                 return (
-                  <button
+                  <motion.button
                     key={result.videoId}
                     type="button"
                     onClick={() => void handleYoutubeSelect(result)}
+                    layoutId={`import-youtube-${result.videoId}`}
+                    variants={rowVariants}
+                    animate={{
+                      scale: selected ? 1.015 : 1,
+                      borderColor: selected
+                        ? "rgb(var(--accent) / 0.6)"
+                        : "rgb(var(--rule))",
+                    }}
+                    whileHover={{ scale: selected ? 1.015 : 1.01 }}
+                    whileTap={{ scale: 0.99 }}
+                    transition={{ duration: 0.18, ease: "easeOut" }}
                     className={cn(
                       "grid w-full grid-cols-[72px_minmax(0,1fr)_24px] items-center gap-3 rounded-sm border border-rule bg-paper p-2 text-left transition-colors hover:border-accent",
                       selected && "border-accent/60 bg-accent/10",
@@ -982,10 +1266,10 @@ export function ImportSongDialog() {
                     ) : (
                       selected && <Check className="h-4 w-4 text-accent" />
                     )}
-                  </button>
+                  </motion.button>
                 );
               })}
-            </div>
+            </motion.div>
           )}
 
           {selectedYoutube && !audioFiles.length && (
@@ -1009,16 +1293,34 @@ export function ImportSongDialog() {
           </p>
         )}
 
-        <DialogFooter>
-          <DialogClose asChild>
-            <Button variant="ghost">Cancel</Button>
-          </DialogClose>
-          <Button onClick={handleFinish} disabled={!ready || busy}>
-            {busy && <Loader2 className="h-4 w-4 animate-spin" />}
-            Finish
-          </Button>
-        </DialogFooter>
-      </DialogContent>
+                      <DialogFooter>
+                        <DialogClose asChild>
+                          <MotionButton
+                            variant="ghost"
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.98 }}
+                          >
+                            Cancel
+                          </MotionButton>
+                        </DialogClose>
+                        <MotionButton
+                          onClick={handleFinish}
+                          disabled={!ready || busy}
+                          whileHover={!ready || busy ? undefined : { scale: 1.02 }}
+                          whileTap={!ready || busy ? undefined : { scale: 0.98 }}
+                        >
+                          {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+                          Finish
+                        </MotionButton>
+                      </DialogFooter>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </motion.div>
+            </DialogPrimitive.Content>
+          </DialogPortal>
+        )}
+      </AnimatePresence>
     </Dialog>
   );
 }

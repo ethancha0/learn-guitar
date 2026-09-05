@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { motion } from "motion/react";
 import {
   Play,
   Pause,
@@ -97,6 +98,7 @@ import { SynthVolumeControl } from "./SynthVolumeControl";
 import { SyncDiagnostics } from "./SyncDiagnostics";
 
 const IS_DEV = process.env.NODE_ENV !== "production";
+const MotionButton = motion.create(Button);
 
 // alphaTab's worker/worklet scripts must be same-origin, so its runtime assets
 // (script, worker, worklet, music font) are copied to `public/alphatab` and
@@ -1500,6 +1502,8 @@ export function AlphaTabPlayer({
       : waitingForImportAlignment
         ? "Preparing synced playback."
         : undefined;
+  const seekProgress =
+    durationMs > 0 ? Math.min(1, Math.max(0, positionMs / durationMs)) : 0;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2 md:gap-3">
@@ -1511,7 +1515,7 @@ export function AlphaTabPlayer({
           {/* `md:contents` dissolves this phone-only row on desktop, so the
               toolbar stays one flowing line there. */}
           <div className="flex items-center gap-2 md:contents">
-            <Button
+            <MotionButton
               size="icon"
               aria-label={
                 countingIn ? "Cancel count-in" : playing ? "Pause" : "Play"
@@ -1519,6 +1523,8 @@ export function AlphaTabPlayer({
               disabled={controlsDisabled}
               onClick={togglePlay}
               className="h-12 w-12 shrink-0 md:h-8 md:w-8"
+              whileHover={controlsDisabled ? undefined : { scale: 1.04 }}
+              whileTap={controlsDisabled ? undefined : { scale: 0.94 }}
             >
               {/* Playback is armed during the count-in, so the button reads as
                   "stop what's happening" rather than offering to start again. */}
@@ -1527,17 +1533,19 @@ export function AlphaTabPlayer({
               ) : (
                 <Play className="h-5 w-5 md:h-4 md:w-4" />
               )}
-            </Button>
-            <Button
+            </MotionButton>
+            <MotionButton
               variant="outline"
               size="icon"
               aria-label="Stop"
               disabled={controlsDisabled}
               onClick={stop}
               className="hidden md:inline-flex"
+              whileHover={controlsDisabled ? undefined : { scale: 1.04 }}
+              whileTap={controlsDisabled ? undefined : { scale: 0.94 }}
             >
               <Square className="h-4 w-4" />
-            </Button>
+            </MotionButton>
 
             {trackNames.length > 0 && (
               <label className="flex min-w-0 flex-1 items-center gap-2 md:flex-none">
@@ -1562,15 +1570,17 @@ export function AlphaTabPlayer({
             )}
 
             {/* Phone speed readout — the slider itself lives in the sheet. */}
-            <Button
+            <MotionButton
               variant="outline"
               size="sm"
               aria-label="Playback speed"
               onClick={() => setMixerOpen(true)}
               className="h-10 shrink-0 tabular-nums md:hidden"
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.97 }}
             >
               {speedToPercent(speed)}%
-            </Button>
+            </MotionButton>
 
             <LoopControl
               looping={looping}
@@ -1582,7 +1592,7 @@ export function AlphaTabPlayer({
               lastBar={barTicks[barTicks.length - 1]?.barNumber ?? 1}
               disabled={controlsDisabled || barTicks.length === 0}
             />
-            <Button
+            <MotionButton
               variant="outline"
               size="icon"
               aria-label="Count-in before playing"
@@ -1594,10 +1604,12 @@ export function AlphaTabPlayer({
                 countInEnabled && engagedKey,
               )}
               onClick={toggleCountIn}
+              whileHover={controlsDisabled ? undefined : { scale: 1.04 }}
+              whileTap={controlsDisabled ? undefined : { scale: 0.94 }}
             >
               <Timer className="h-5 w-5 md:h-4 md:w-4" />
-            </Button>
-            <Button
+            </MotionButton>
+            <MotionButton
               variant="outline"
               size="icon"
               aria-label="Tab only (hide standard notation)"
@@ -1606,10 +1618,12 @@ export function AlphaTabPlayer({
               disabled={status !== "ready"}
               className={cn("hidden md:inline-flex", tabOnly && engagedKey)}
               onClick={toggleTabOnly}
+              whileHover={status !== "ready" ? undefined : { scale: 1.04 }}
+              whileTap={status !== "ready" ? undefined : { scale: 0.94 }}
             >
               <Music className="h-4 w-4" />
-            </Button>
-            <Button
+            </MotionButton>
+            <MotionButton
               variant="outline"
               size="icon"
               aria-label="Toggle mixer"
@@ -1619,9 +1633,11 @@ export function AlphaTabPlayer({
                 mixerOpen && engagedKey,
               )}
               onClick={() => setMixerOpen((o) => !o)}
+              whileHover={{ scale: 1.04 }}
+              whileTap={{ scale: 0.94 }}
             >
               <SlidersHorizontal className="h-5 w-5 md:h-4 md:w-4" />
-            </Button>
+            </MotionButton>
           </div>
 
           {/* Scrubber above the buttons on a phone: it reads as a continuation
@@ -1632,34 +1648,49 @@ export function AlphaTabPlayer({
             <span className="shrink-0 font-semibold tabular-nums text-accent">
               {formatMs(positionMs)}
             </span>
-            <input
-              type="range"
-              min={0}
-              max={durationMs || 1}
-              value={Math.min(positionMs, durationMs || 1)}
-              disabled={controlsDisabled || durationMs === 0}
-              onMouseDown={() => setScrubbing(true)}
-              onTouchStart={() => setScrubbing(true)}
-              onChange={(e) => setPositionMs(Number(e.target.value))}
-              onMouseUp={(e) => {
-                setScrubbing(false);
-                if (apiRef.current) {
-                  apiRef.current.timePosition = Number(
-                    (e.target as HTMLInputElement).value,
-                  );
-                }
-              }}
-              onTouchEnd={(e) => {
-                setScrubbing(false);
-                if (apiRef.current) {
-                  apiRef.current.timePosition = Number(
-                    (e.target as HTMLInputElement).value,
-                  );
-                }
-              }}
-              className="h-0.5 min-w-0 flex-1 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
-              aria-label="Seek"
-            />
+            <span className="relative flex min-w-0 flex-1 items-center">
+              <span className="pointer-events-none absolute left-0 right-0 top-1/2 h-0.5 -translate-y-1/2 bg-track" />
+              <motion.span
+                className="pointer-events-none absolute left-0 top-1/2 h-0.5 origin-left -translate-y-1/2 bg-accent"
+                animate={{ scaleX: seekProgress }}
+                transition={{ type: "spring", stiffness: 280, damping: 34 }}
+                style={{ width: "100%" }}
+              />
+              <motion.span
+                className="pointer-events-none absolute top-1/2 h-2.5 w-2.5 -translate-y-1/2 rounded-full border border-accent bg-paper"
+                animate={{ left: `${seekProgress * 100}%` }}
+                transition={{ type: "spring", stiffness: 280, damping: 34 }}
+                style={{ marginLeft: "-5px" }}
+              />
+              <input
+                type="range"
+                min={0}
+                max={durationMs || 1}
+                value={Math.min(positionMs, durationMs || 1)}
+                disabled={controlsDisabled || durationMs === 0}
+                onMouseDown={() => setScrubbing(true)}
+                onTouchStart={() => setScrubbing(true)}
+                onChange={(e) => setPositionMs(Number(e.target.value))}
+                onMouseUp={(e) => {
+                  setScrubbing(false);
+                  if (apiRef.current) {
+                    apiRef.current.timePosition = Number(
+                      (e.target as HTMLInputElement).value,
+                    );
+                  }
+                }}
+                onTouchEnd={(e) => {
+                  setScrubbing(false);
+                  if (apiRef.current) {
+                    apiRef.current.timePosition = Number(
+                      (e.target as HTMLInputElement).value,
+                    );
+                  }
+                }}
+                className="relative h-5 w-full cursor-pointer opacity-0 disabled:cursor-not-allowed disabled:opacity-0"
+                aria-label="Seek"
+              />
+            </span>
             <span className="shrink-0 tabular-nums text-ink-muted">
               {formatMs(durationMs)}
             </span>
@@ -1742,7 +1773,7 @@ export function AlphaTabPlayer({
 
           <span className="ml-auto flex items-center gap-2">
             {IS_DEV && hasBacking && (
-              <Button
+              <MotionButton
                 variant="outline"
                 size="icon"
                 aria-label={
@@ -1753,21 +1784,25 @@ export function AlphaTabPlayer({
                 aria-pressed={diagOpen}
                 className={cn((diagOpen || dtwRunning) && engagedKey)}
                 onClick={() => setDiagOpen((o) => !o)}
+                whileHover={{ scale: 1.04 }}
+                whileTap={{ scale: 0.94 }}
               >
                 <Activity
                   className={cn("h-4 w-4", dtwRunning && "animate-pulse")}
                 />
-              </Button>
+              </MotionButton>
             )}
-            <Button
+            <MotionButton
               variant="outline"
               size="icon"
               aria-label="Print"
               disabled={status !== "ready"}
               onClick={() => apiRef.current?.print()}
+              whileHover={status !== "ready" ? undefined : { scale: 1.04 }}
+              whileTap={status !== "ready" ? undefined : { scale: 0.94 }}
             >
               <Printer className="h-4 w-4" />
-            </Button>
+            </MotionButton>
           </span>
         </div>
       </div>
