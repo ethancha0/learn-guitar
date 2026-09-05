@@ -56,10 +56,13 @@ jobs:
 
       # fluidsynth renders the score to audio for the DTW comparison, and
       # fluid-soundfont-gm ships the FluidR3_GM soundfont it renders with.
-      - name: Install fluidsynth and a GM soundfont
+      # ffmpeg is a fallback only: the align script prefers the ffmpeg-static
+      # binary npm installs, which is the one the app uses locally.
+      - name: Install fluidsynth, a GM soundfont and ffmpeg
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends fluidsynth fluid-soundfont-gm
+          sudo apt-get install -y --no-install-recommends \
+            fluidsynth fluid-soundfont-gm ffmpeg
 
       - name: Install Python dependencies
         run: pip install -r align/requirements.txt

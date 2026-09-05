@@ -20,6 +20,8 @@ import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { existsSync } from "node:fs";
+import ffmpegPath from "ffmpeg-static";
 
 const BUCKET = "song-files";
 const PYTHON = process.env.ALIGN_PYTHON || "python3";
@@ -84,6 +86,44 @@ async function download(storagePath, destination) {
   return destination;
 }
 
+/**
+ * Converts the recording to the mono 22.05 kHz s16 WAV align.py expects, with
+ * the same ffmpeg call `/api/align` makes locally (`prepareAudioForAlignment`
+ * in lib/youtube/metadata.ts) and the same bundled binary, so a map solved here
+ * matches one solved on a dev machine.
+ *
+ * Handing align.py the raw download instead only works for formats libsndfile
+ * can open. A YouTube-sourced m4a or webm falls through to audioread, which
+ * needs a decoder that is not there, and the whole run dies on "could not
+ * decode audio". Converting up front removes the guesswork for every format.
+ */
+async function toAlignmentWav(inputPath, dir) {
+  const wavPath = path.join(dir, "recording.alignment.wav");
+  // ffmpeg-static resolves to a path whether or not its postinstall actually
+  // fetched the binary, so check before trusting it and fall back to PATH.
+  const ffmpeg =
+    ffmpegPath && existsSync(ffmpegPath) ? ffmpegPath : "ffmpeg";
+  const convert = await run(ffmpeg, [
+    "-hide_banner",
+    "-loglevel", "error",
+    "-y",
+    "-i", inputPath,
+    "-vn",
+    "-ac", "1",
+    "-ar", "22050",
+    "-sample_fmt", "s16",
+    "-c:a", "pcm_s16le",
+    wavPath,
+  ]);
+  if (convert.code !== 0) {
+    throw new Error(
+      `ffmpeg could not decode ${path.basename(inputPath)} (exit ${convert.code}). ` +
+        (convert.stderr.trim().split("\n").slice(-3).join(" ") || ""),
+    );
+  }
+  return wavPath;
+}
+
 async function saveSyncMap(map) {
   const url = `${SUPABASE_URL}/rest/v1/songs?id=eq.${encodeURIComponent(songId)}`;
   const res = await fetch(url, {
@@ -105,11 +145,12 @@ try {
   const row = await fetchRow();
   console.log(`Aligning "${row.title}" (${songId})`);
 
-  const [gpPath, audioPath] = await Promise.all([
+  const [gpPath, downloadedAudio] = await Promise.all([
     download(row.tab_path, path.join(dir, "score.gp")),
-    // librosa reads mp3/m4a/webm directly as long as ffmpeg is on PATH.
     download(row.audio_path, path.join(dir, path.basename(row.audio_path))),
   ]);
+
+  const audioPath = await toAlignmentWav(downloadedAudio, dir);
 
   const gpToMidi = await run("node", ["align/gp-to-midi.mjs", gpPath, dir]);
   if (gpToMidi.code !== 0) {
