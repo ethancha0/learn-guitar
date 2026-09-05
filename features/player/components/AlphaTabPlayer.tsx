@@ -1638,6 +1638,36 @@ export function AlphaTabPlayer({
             >
               <SlidersHorizontal className="h-5 w-5 md:h-4 md:w-4" />
             </MotionButton>
+            {/* Sits beside the mixer because it is the other panel toggle, and
+                because the alignment it reports is the thing you reach for the
+                moment playback sounds out of step with the score. */}
+            {IS_DEV && hasBacking && (
+              <MotionButton
+                variant="outline"
+                size="icon"
+                aria-label={
+                  dtwRunning
+                    ? "Aligning… (sync diagnostics)"
+                    : "Sync diagnostics"
+                }
+                title="Sync diagnostics (DTW map, offset, drift)"
+                aria-pressed={diagOpen}
+                className={cn(
+                  "h-10 w-10 shrink-0 md:h-[30px] md:w-[30px]",
+                  (diagOpen || dtwRunning) && engagedKey,
+                )}
+                onClick={() => setDiagOpen((o) => !o)}
+                whileHover={{ scale: 1.04 }}
+                whileTap={{ scale: 0.94 }}
+              >
+                <Activity
+                  className={cn(
+                    "h-5 w-5 md:h-4 md:w-4",
+                    dtwRunning && "animate-pulse",
+                  )}
+                />
+              </MotionButton>
+            )}
           </div>
 
           {/* Scrubber above the buttons on a phone: it reads as a continuation
@@ -1772,26 +1802,6 @@ export function AlphaTabPlayer({
           )}
 
           <span className="ml-auto flex items-center gap-2">
-            {IS_DEV && hasBacking && (
-              <MotionButton
-                variant="outline"
-                size="icon"
-                aria-label={
-                  dtwRunning
-                    ? "Aligning… (sync diagnostics)"
-                    : "Sync diagnostics"
-                }
-                aria-pressed={diagOpen}
-                className={cn((diagOpen || dtwRunning) && engagedKey)}
-                onClick={() => setDiagOpen((o) => !o)}
-                whileHover={{ scale: 1.04 }}
-                whileTap={{ scale: 0.94 }}
-              >
-                <Activity
-                  className={cn("h-4 w-4", dtwRunning && "animate-pulse")}
-                />
-              </MotionButton>
-            )}
             <MotionButton
               variant="outline"
               size="icon"
