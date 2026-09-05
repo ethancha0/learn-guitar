@@ -8,6 +8,7 @@ import { cn } from "@/lib/cn";
 import type { SyncAnchor } from "@/features/library/data/songStore";
 import type { SyncMap } from "@/features/player/data/syncMap";
 import type { SyncVerifyReport } from "@/features/player/data/syncVerify";
+import { ALIGNMENT_ENABLED } from "@/features/player/data/alignmentQueue";
 
 /** An anchor counts as honoured when the live map lands this close to it. */
 const ANCHOR_TOLERANCE_MS = 20;
@@ -39,9 +40,13 @@ interface SyncDiagnosticsProps {
 }
 
 /**
- * Developer-only alignment inspector: the score→audio warping curve (diagonal =
- * identical tempo), the live error, nearest sync points and diagnostics. Not
- * shipped to production.
+ * Alignment inspector: the score→audio warping curve (diagonal = identical
+ * tempo), the live error, nearest sync points and diagnostics.
+ *
+ * Shipped to production but hidden there unless a viewer opts in — see
+ * `syncDiagnosticsFlag.ts`. Everything it shows is read out of the running
+ * player, so it works anywhere; the one thing it cannot do off a dev machine is
+ * re-run DTW alignment, and that button is hidden rather than left to 404.
  */
 export function SyncDiagnostics({
   songId,
@@ -305,14 +310,23 @@ export function SyncDiagnostics({
             )}
           </div>
         )}
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onRunDtw}
-          disabled={dtwRunning}
-        >
-          {dtwRunning ? "Aligning… (DTW)" : "Run DTW alignment"}
-        </Button>
+        {ALIGNMENT_ENABLED ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onRunDtw}
+            disabled={dtwRunning}
+          >
+            {dtwRunning ? "Aligning… (DTW)" : "Run DTW alignment"}
+          </Button>
+        ) : (
+          <p className="text-[11px] leading-snug text-zinc-500">
+            Re-running DTW alignment needs the local Python pipeline behind{" "}
+            <code>/api/align</code>, which is disabled in this build. The map
+            shown here is whatever was solved on a development machine and
+            saved to the account.
+          </p>
+        )}
         {message && (
           <p className="text-[11px] leading-snug text-zinc-400">{message}</p>
         )}

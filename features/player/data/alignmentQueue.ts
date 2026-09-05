@@ -23,8 +23,14 @@ import {
 } from "@/features/library/data/songStore";
 import { DtwSyncGenerator } from "./syncGenerator";
 
-/** `/api/align` is disabled in production, so there is nothing to queue there. */
-const ENABLED = process.env.NODE_ENV !== "production";
+/**
+ * `/api/align` is disabled in production, so there is nothing to queue there.
+ * Exported because the UI has to hide the controls that would call it — the
+ * diagnostics panel is reachable in production now (see
+ * `syncDiagnosticsFlag.ts`), and a button that can only 404 is worse than no
+ * button.
+ */
+export const ALIGNMENT_ENABLED = process.env.NODE_ENV !== "production";
 
 export interface AlignmentJob {
   songId: string;
@@ -73,7 +79,9 @@ let chain: Promise<unknown> = Promise.resolve();
 export function queueAlignment(
   req: AlignmentRequest,
 ): Promise<AlignmentJob | null> {
-  if (!ENABLED || typeof window === "undefined") return Promise.resolve(null);
+  if (!ALIGNMENT_ENABLED || typeof window === "undefined") {
+    return Promise.resolve(null);
+  }
 
   const active = jobs.get(req.songId);
   if (active?.state === "queued" || active?.state === "running") {

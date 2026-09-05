@@ -98,7 +98,9 @@ import { AudioOffsetControl } from "./AudioOffsetControl";
 import { BackingVolumeControl } from "./BackingVolumeControl";
 import { SynthVolumeControl } from "./SynthVolumeControl";
 import { SyncDiagnostics } from "./SyncDiagnostics";
+import { useSyncDiagnosticsEnabled } from "@/features/player/data/syncDiagnosticsFlag";
 
+/** Gates the console debug handles only; the panel has its own opt-in. */
 const IS_DEV = process.env.NODE_ENV !== "production";
 const MotionButton = motion.create(Button);
 
@@ -320,6 +322,8 @@ export function AlphaTabPlayer({
   // Recording + calibration state
   const [mixerOpen, setMixerOpen] = useState(false);
   const [diagOpen, setDiagOpen] = useState(false);
+  // Development, `NEXT_PUBLIC_SYNC_DIAGNOSTICS=1`, or `?diag=1` in this browser.
+  const diagEnabled = useSyncDiagnosticsEnabled();
   const [hasBacking, setHasBacking] = useState(false);
   const [backingVol, setBackingVol] = useState(0.85);
   const [backingMuted, setBackingMuted] = useState(false);
@@ -1712,7 +1716,7 @@ export function AlphaTabPlayer({
             {/* Sits beside the mixer because it is the other panel toggle, and
                 because the alignment it reports is the thing you reach for the
                 moment playback sounds out of step with the score. */}
-            {IS_DEV && hasBacking && (
+            {diagEnabled && hasBacking && (
               <MotionButton
                 variant="outline"
                 size="icon"
@@ -1963,7 +1967,7 @@ export function AlphaTabPlayer({
         />
       )}
 
-      {IS_DEV && diagOpen && (
+      {diagEnabled && diagOpen && (
         <SyncDiagnostics
           songId={songId}
           map={syncMap}

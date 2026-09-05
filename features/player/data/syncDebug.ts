@@ -2,12 +2,18 @@
 
 import type { SyncMap } from "./syncMap";
 import { probeSyncMap, type SyncProbeReport } from "./syncProbe";
+import { readSyncDiagnosticsFlag } from "./syncDiagnosticsFlag";
 
 /**
- * Installs `window.__syncDebug()` in development so alignment can be *measured*
- * rather than eyeballed against the cursor. Returns the current score/audio
- * positions, the mapping's prediction for each, the surrounding sync points and
- * the alignment method + diagnostics.
+ * Installs `window.__syncDebug()` so alignment can be *measured* rather than
+ * eyeballed against the cursor. Returns the current score/audio positions, the
+ * mapping's prediction for each, the surrounding sync points and the alignment
+ * method + diagnostics.
+ *
+ * Installed for whoever has the diagnostics panel — the panel advertises these
+ * handles in its footer, so the two have to agree about who gets them. That is
+ * everyone in development, and only an opted-in browser in production (see
+ * `syncDiagnosticsFlag.ts`).
  */
 export interface SyncDebugSnapshot {
   method: string;
@@ -47,7 +53,7 @@ const PROBE_KEY = "__syncProbe";
 const VERIFY_KEY = "__syncVerify";
 
 export function installSyncDebug(deps: Deps): () => void {
-  if (typeof window === "undefined" || process.env.NODE_ENV === "production") {
+  if (typeof window === "undefined" || !readSyncDiagnosticsFlag()) {
     return () => {};
   }
 
