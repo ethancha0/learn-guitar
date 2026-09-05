@@ -1710,7 +1710,7 @@ export function AlphaTabPlayer({
               onChange={(e) =>
                 changeSpeed(percentToSpeed(Number(e.target.value)))
               }
-              className="h-0.5 w-[82px] shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
+              className="slider-hairline h-0.5 w-[82px] shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
               aria-label="Playback speed"
               aria-valuetext={`${speedToPercent(speed)}%`}
             />

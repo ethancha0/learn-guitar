@@ -103,7 +103,7 @@ function VolumeSlider({
       value={value}
       aria-label={ariaLabel}
       onChange={(e) => onChange(Number(e.target.value))}
-      className="h-0.5 w-full cursor-pointer"
+      className="slider-hairline h-0.5 w-full cursor-pointer"
     />
   );
 }
@@ -142,7 +142,7 @@ function SettingSlider({
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
         aria-label={label}
-        className="h-0.5 w-full cursor-pointer"
+        className="slider-hairline h-0.5 w-full cursor-pointer"
       />
     </label>
   );
@@ -445,7 +445,7 @@ export function Mixer({
                 onChange={(e) => onSpeedPercent(Number(e.target.value))}
                 aria-label="Playback speed"
                 aria-valuetext={`${speedPercent}%`}
-                className="h-0.5 w-full cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
+                className="slider-hairline h-0.5 w-full cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
               />
             </div>
             <ToggleRow

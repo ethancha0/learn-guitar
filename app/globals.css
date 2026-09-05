@@ -87,6 +87,21 @@ input[type="range"] {
 }
 
 /*
+ * A two-pixel rule is a mouse target, not a finger one. Left as-is, a touch has
+ * to land inside those two pixels — miss, and the gesture belongs to whatever
+ * is scrolling behind it — which is why the level sliders looked dead on a
+ * phone while working on a desktop. Padding grows the hit box to ~24px without
+ * touching the hairline: the track is drawn in the content box, which the
+ * element's own `h-0.5` still pins at 2px. `touch-action: none` then hands the
+ * drag to the slider rather than to the enclosing scroller (the mixer sheet).
+ */
+.slider-hairline {
+  box-sizing: content-box;
+  padding-block: 11px;
+  touch-action: none;
+}
+
+/*
  * alphaTab playback cursors. alphaTab renders the cursor DOM but ships no
  * colours, so the moving "slider" is invisible until styled here. Scoped to the
  * score container in AlphaTabPlayer.

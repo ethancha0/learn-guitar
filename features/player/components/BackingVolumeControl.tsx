@@ -47,7 +47,7 @@ export function BackingVolumeControl({
         disabled={disabled}
         onChange={(e) => onVolume(Number(e.target.value))}
         aria-label="Recording volume"
-        className="h-0.5 w-[88px] shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
+        className="slider-hairline h-0.5 w-[88px] shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
       />
     </div>
   );
