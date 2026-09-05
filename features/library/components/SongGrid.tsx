@@ -21,7 +21,9 @@ export function SongGrid({ songs }: { songs: Song[] }) {
       <div
         className={cn(
           CATALOGUE_COLUMNS,
-          "border-b border-rule-strong px-1 pb-[7px] font-mono text-[9.5px] uppercase tracking-label text-ink-faint",
+          // `pr-8` matches the gutter each row reserves for its delete key, so
+          // the header stays in register with the columns below it.
+          "border-b border-rule-strong pb-[7px] pl-1 pr-8 font-mono text-[9.5px] uppercase tracking-label text-ink-faint",
         )}
       >
         <span>No.</span>
