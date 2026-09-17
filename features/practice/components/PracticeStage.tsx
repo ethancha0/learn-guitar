@@ -17,6 +17,8 @@ import {
 } from "@/features/library/data/songStore";
 import { base64ToBytes } from "@/features/library/data/tabFile";
 import { AudioOffsetControl } from "@/features/player/components/AudioOffsetControl";
+import { BackingVolumeControl } from "@/features/player/components/BackingVolumeControl";
+import { SynthVolumeControl } from "@/features/player/components/SynthVolumeControl";
 import { SyncDiagnostics } from "@/features/player/components/SyncDiagnostics";
 import { queueAlignment, useAlignmentJob } from "@/features/player/data/alignmentQueue";
 import { getBackingAudio } from "@/features/player/data/audioStore";
@@ -26,6 +28,7 @@ import { getAudioContext, unlockAudio } from "@/features/player/data/audioEngine
 import { OffsetSyncGenerator } from "@/features/player/data/syncGenerator";
 import { useSyncDiagnosticsEnabled } from "@/features/player/data/syncDiagnosticsFlag";
 import type { SyncMap } from "@/features/player/data/syncMap";
+import { decodeAudio } from "@/features/player/data/waveform";
 import { buildChart, pickBassTrackIndex, UnsupportedTrackError } from "../data/buildChart";
 import {
   applyHitCondition,
@@ -52,6 +55,7 @@ import {
   type PracticeNote,
   type RunPhase,
 } from "../types/practice";
+import { StrikeSynth } from "../data/strikeSynth";
 import { JudgementFlashOverlay } from "./JudgementFlashOverlay";
 import { KeyRow } from "./KeyRow";
 import { NoteHighway } from "./NoteHighway";
@@ -142,14 +146,24 @@ export function PracticeStage({
   const audioClockRef = useRef<AudioClock | null>(null);
   const syncMapRef = useRef<SyncMap | null>(null);
   const [hasBacking, setHasBacking] = useState(false);
-  const [audioDurationSec, setAudioDurationSec] = useState(0);
+
+  // Three candidate recording lengths, least trustworthy last — same priority
+  // the player uses. `<audio>.duration` is a bitrate-header estimate for a VBR
+  // mp3 read from a blob URL and is routinely off by a couple of seconds; DTW
+  // was computed against the *decoded* duration, so trusting the element's
+  // guess here fed `sanitize()` a different tail cutoff than the player used,
+  // which is exactly the kind of mismatch that drifts the last stretch of a
+  // song even though both views share the same underlying alignment.
+  const [decodedDurationSec, setDecodedDurationSec] = useState(0);
+  const [elementDurationSec, setElementDurationSec] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     let url: string | undefined;
     let cleanup: (() => void) | undefined;
     setHasBacking(false);
-    setAudioDurationSec(0);
+    setDecodedDurationSec(0);
+    setElementDurationSec(0);
     getBackingAudio(songId).then((blob) => {
       if (cancelled || !blob || !audioRef.current) return;
       const typed =
@@ -161,9 +175,18 @@ export function PracticeStage({
       audio.src = url;
       audio.load();
       setHasBacking(true);
+
+      decodeAudio(typed)
+        .then((decoded) => {
+          if (!cancelled && decoded.duration > 0) setDecodedDurationSec(decoded.duration);
+        })
+        .catch((err) =>
+          console.error("[PracticeStage] could not decode the recording", err),
+        );
+
       const onMeta = () => {
         if (Number.isFinite(audio.duration) && audio.duration > 0) {
-          setAudioDurationSec(audio.duration);
+          setElementDurationSec(audio.duration);
         }
       };
       audio.addEventListener("loadedmetadata", onMeta);
@@ -188,6 +211,8 @@ export function PracticeStage({
   // practice mode is visible back in the player too.
   const [offsetMs, setOffsetMs] = useState(0);
   const [storedSyncMap, setStoredSyncMap] = useState<StoredSyncMap | null>(null);
+  const storedDurationSec = storedSyncMap?.audioDurationSec ?? 0;
+  const audioDurationSec = decodedDurationSec || storedDurationSec || elementDurationSec;
   const [dtwStatus, setDtwStatus] = useState<AudioSyncSettings["dtwStatus"]>();
   const [syncSettingsLoaded, setSyncSettingsLoaded] = useState(false);
   const [autoAligning, setAutoAligning] = useState(false);
@@ -195,12 +220,24 @@ export function PracticeStage({
   const selfWritingSyncRef = useRef(false);
   const offsetPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Backing recording + synth reference levels — same fields the player's
+  // mixer reads and writes, so a level set here carries over there too.
+  const [backingVol, setBackingVol] = useState(0.85);
+  const [backingMuted, setBackingMuted] = useState(false);
+  const [synthVol, setSynthVol] = useState(0.6);
+  const [synthMuted, setSynthMuted] = useState(false);
+  const mixerPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     setSyncSettingsLoaded(false);
     const sync = getAudioSync(songId);
     setOffsetMs(sync?.offsetMs ?? 0);
     setStoredSyncMap(sync?.syncMap ?? null);
     setDtwStatus(sync?.dtwStatus);
+    if (typeof sync?.backingVol === "number") setBackingVol(sync.backingVol);
+    if (typeof sync?.backingMuted === "boolean") setBackingMuted(sync.backingMuted);
+    if (typeof sync?.synthVol === "number") setSynthVol(sync.synthVol);
+    if (typeof sync?.synthMuted === "boolean") setSynthMuted(sync.synthMuted);
     setSyncSettingsLoaded(true);
   }, [songId]);
 
@@ -265,6 +302,36 @@ export function PracticeStage({
       audioClockRef.current = null;
     };
   }, [hasBacking]);
+
+  // Recording level -> the <audio> element, persisted (debounced) to the
+  // same store the player's mixer uses.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (audio) audio.volume = backingMuted ? 0 : Math.min(1, backingVol);
+    if (mixerPersistTimer.current) clearTimeout(mixerPersistTimer.current);
+    mixerPersistTimer.current = setTimeout(() => {
+      persistSync({ backingVol, backingMuted, synthVol, synthMuted });
+    }, SYNC_PERSIST_DEBOUNCE_MS);
+    return () => {
+      if (mixerPersistTimer.current) clearTimeout(mixerPersistTimer.current);
+    };
+  }, [backingVol, backingMuted, synthVol, synthMuted, hasBacking, persistSync]);
+
+  // --- strike synth: a real bass note on every hit, a dead click on a whiff --------
+  const strikeSynthRef = useRef<StrikeSynth | null>(null);
+  useEffect(() => {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    const synth = new StrikeSynth(ctx);
+    strikeSynthRef.current = synth;
+    return () => {
+      synth.dispose();
+      strikeSynthRef.current = null;
+    };
+  }, []);
+  useEffect(() => {
+    strikeSynthRef.current?.setVolume(synthMuted ? 0 : synthVol);
+  }, [synthVol, synthMuted]);
 
   // A song whose DTW mapping is still being solved isn't ready to practice
   // against — the highway would track a straight-line guess and then jump
@@ -555,13 +622,17 @@ export function PracticeStage({
         now,
         settingsRef.current.hitWindowSec,
       );
-      if (!target) return; // whiff — no combo break
+      if (!target) {
+        strikeSynthRef.current?.playWhiff(); // whiff — no combo break
+        return;
+      }
       const offset = now - target.t;
       const judgement = judgeOffset(offset);
       setNotes((prev) =>
         prev.map((n) => (n.id === target.id ? { ...n, state: judgement } : n)),
       );
       registerJudgement(judgement, lane, offset, now);
+      strikeSynthRef.current?.playNote(target.midi);
     },
     [registerJudgement],
   );
@@ -823,7 +894,17 @@ export function PracticeStage({
                     title="Sync diagnostics (DTW map, offset, drift)"
                     aria-pressed={diagOpen}
                     className={cn((diagOpen || dtwRunning) && engagedKey)}
-                    onClick={() => setDiagOpen((o) => !o)}
+                    onClick={() => {
+                      // Opening the panel is a distraction from the highway,
+                      // not a request to fail the run on notes you can no
+                      // longer see coming — pause it, same as any other
+                      // "stepped away" moment.
+                      if (!diagOpen && phaseRef.current === "running") {
+                        audioRef.current?.pause();
+                        setPhase("paused");
+                      }
+                      setDiagOpen((o) => !o);
+                    }}
                   >
                     <Activity className={cn("h-4 w-4", dtwRunning && "animate-pulse")} />
                   </Button>
@@ -886,6 +967,28 @@ export function PracticeStage({
               />
               {hasBacking && (
                 <div className="flex flex-wrap items-center gap-2 border border-rule-strong bg-paper-raised px-4 py-2.5">
+                  <span className="font-mono text-[9.5px] uppercase tracking-label text-ink-faint">
+                    Rec
+                  </span>
+                  <BackingVolumeControl
+                    volume={backingVol}
+                    muted={backingMuted}
+                    onVolume={setBackingVol}
+                    onMuteToggle={() => setBackingMuted((m) => !m)}
+                    disabled={!syncSettingsLoaded}
+                  />
+                  <span className="ml-1.5 font-mono text-[9.5px] uppercase tracking-label text-ink-faint">
+                    Ref
+                  </span>
+                  <SynthVolumeControl
+                    volume={synthVol}
+                    muted={synthMuted}
+                    onVolume={setSynthVol}
+                    onMuteToggle={() => setSynthMuted((m) => !m)}
+                    trackName="bass strikes"
+                    disabled={!syncSettingsLoaded}
+                  />
+                  <span aria-hidden className="mx-1 h-5 w-px bg-dot" />
                   <span className="font-mono text-[9.5px] uppercase tracking-label text-ink-faint">
                     Sync
                   </span>

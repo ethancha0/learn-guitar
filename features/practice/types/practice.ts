@@ -14,6 +14,8 @@ export interface PracticeNote {
   t: number;
   lane: Lane;
   fret: number;
+  /** MIDI pitch, straight from the score — drives the strike synth. */
+  midi: number;
   /** 1-based bar number, for the per-bar accuracy chart. */
   bar: number;
   state: NoteJudgement | null;
