@@ -9,9 +9,13 @@
 
 import { DEFAULT_HIT_WINDOW_SEC } from "./judge";
 
+export type LaneKeys = [string, string, string, string];
+
 export interface PracticeSettings {
-  /** J K L ; by default, lanes E A D G. */
-  keys: [string, string, string, string];
+  /** J K L ; by default, lanes E A D G. Values are `KeyboardEvent.key`. */
+  keys: LaneKeys;
+  /** Optional second key per lane; "" means unset. */
+  altKeys: LaneKeys;
   /** Seconds of lookahead a note travels from the horizon to the hit line. */
   noteSpeedSec: number;
   hitWindowSec: number;
@@ -20,6 +24,7 @@ export interface PracticeSettings {
 
 export const DEFAULT_PRACTICE_SETTINGS: PracticeSettings = {
   keys: ["j", "k", "l", ";"],
+  altKeys: ["", "", "", ""],
   noteSpeedSec: 1.6,
   hitWindowSec: DEFAULT_HIT_WINDOW_SEC,
   showFretNumbers: true,
@@ -42,14 +47,8 @@ export function getPracticeSettings(): PracticeSettings {
 export function sanitizePracticeSettings(
   value: Partial<PracticeSettings> | null | undefined,
 ): PracticeSettings {
-  const keys = Array.isArray(value?.keys) && value.keys.length === 4
-    ? (value.keys.map((k) => (typeof k === "string" && k ? k : "")) as [
-        string,
-        string,
-        string,
-        string,
-      ])
-    : DEFAULT_PRACTICE_SETTINGS.keys;
+  const keys = sanitizeLaneKeys(value?.keys, DEFAULT_PRACTICE_SETTINGS.keys);
+  const altKeys = sanitizeLaneKeys(value?.altKeys, DEFAULT_PRACTICE_SETTINGS.altKeys);
   const noteSpeedSec =
     typeof value?.noteSpeedSec === "number" && Number.isFinite(value.noteSpeedSec)
       ? Math.min(3, Math.max(0.6, value.noteSpeedSec))
@@ -62,7 +61,44 @@ export function sanitizePracticeSettings(
     typeof value?.showFretNumbers === "boolean"
       ? value.showFretNumbers
       : DEFAULT_PRACTICE_SETTINGS.showFretNumbers;
-  return { keys, noteSpeedSec, hitWindowSec, showFretNumbers };
+  return { keys, altKeys, noteSpeedSec, hitWindowSec, showFretNumbers };
+}
+
+function sanitizeLaneKeys(value: unknown, fallback: LaneKeys): LaneKeys {
+  if (!Array.isArray(value) || value.length !== 4) return fallback;
+  return value.map((k, i) =>
+    typeof k === "string" && k ? k : fallback[i],
+  ) as LaneKeys;
+}
+
+/** Keys that can never be bound to a lane. */
+const UNBINDABLE_KEYS = new Set([
+  "Shift", "Control", "Alt", "Meta", "CapsLock", "Escape", "Tab", "Enter",
+]);
+
+/** Normalises `KeyboardEvent.key` into the stored form, or null if unbindable. */
+export function normalizeBindingKey(key: string): string | null {
+  if (UNBINDABLE_KEYS.has(key) || key === "Dead" || key === "Unidentified") return null;
+  return key.length === 1 ? key.toLowerCase() : key;
+}
+
+/** Short label for a bound key ("j" → "J", " " → "SPACE", "ArrowUp" → "↑"). */
+export function keyLabel(key: string): string {
+  if (!key) return "";
+  if (key === " ") return "SPACE";
+  const arrows: Record<string, string> = {
+    ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→",
+  };
+  return arrows[key] ?? key.toUpperCase();
+}
+
+/** Lane index a key is bound to (primary or alternate), or -1. */
+export function laneForKey(settings: PracticeSettings, key: string): number {
+  if (!key) return -1;
+  const k = key.length === 1 ? key.toLowerCase() : key;
+  const primary = settings.keys.indexOf(k);
+  if (primary !== -1) return primary;
+  return settings.altKeys.indexOf(k);
 }
 
 export function setPracticeSettings(next: PracticeSettings): void {

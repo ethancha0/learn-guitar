@@ -42,6 +42,7 @@ import {
   DEFAULT_PRACTICE_SETTINGS,
   getPracticeBest,
   getPracticeSettings,
+  laneForKey as laneForBindingKey,
   recordPracticeRun,
   setPracticeSettings,
   type PracticeSettings,
@@ -669,9 +670,7 @@ export function PracticeStage({
       );
     }
     function laneForKey(key: string): number {
-      return settingsRef.current.keys.findIndex(
-        (k) => k.toLowerCase() === key.toLowerCase(),
-      );
+      return laneForBindingKey(settingsRef.current, key);
     }
     function onKeyDown(e: KeyboardEvent) {
       if (e.repeat || isEditable(e.target) || !hasFocusRef.current) return;
@@ -960,7 +959,7 @@ export function PracticeStage({
                     hasFocusRef.current = focused;
                   }}
                 />
-                <KeyRow keys={settings.keys} pressed={pressed} />
+                <KeyRow keys={settings.keys} altKeys={settings.altKeys} pressed={pressed} />
                 <JudgementFlashOverlay flash={flash} t={t} />
               </div>
               <PracticeTransport

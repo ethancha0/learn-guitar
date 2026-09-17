@@ -3,6 +3,7 @@
 import { Play } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { LANE_COLORS, oklchColor } from "../data/laneColors";
+import { keyLabel } from "../data/practiceSettings";
 import {
   CULL_Z_MAX,
   CULL_Z_MIN,
@@ -93,7 +94,7 @@ export function NoteHighway({
   });
 
   const overlay = phase === "running" ? null : OVERLAY_COPY[phase];
-  const hint = `Hit ${keys.map((k) => k.toUpperCase()).join(" ")} as each note crosses the line`;
+  const hint = `Hit ${keys.map(keyLabel).join(" ")} as each note crosses the line`;
 
   return (
     <div

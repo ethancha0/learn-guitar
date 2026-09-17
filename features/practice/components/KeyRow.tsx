@@ -1,5 +1,6 @@
 import { cn } from "@/lib/cn";
 import { LANE_COLORS, oklchColor } from "../data/laneColors";
+import { keyLabel, type LaneKeys } from "../data/practiceSettings";
 import type { Lane } from "../types/practice";
 
 /**
@@ -9,9 +10,11 @@ import type { Lane } from "../types/practice";
  */
 export function KeyRow({
   keys,
+  altKeys,
   pressed,
 }: {
-  keys: readonly [string, string, string, string];
+  keys: LaneKeys;
+  altKeys: LaneKeys;
   pressed: readonly [boolean, boolean, boolean, boolean];
 }) {
   return (
@@ -21,6 +24,7 @@ export function KeyRow({
           key={lane.lane}
           lane={lane.lane}
           label={keys[lane.lane]}
+          altLabel={altKeys[lane.lane]}
           stringName={lane.name}
           border={lane.border}
           text={lane.text}
@@ -34,6 +38,7 @@ export function KeyRow({
 
 function Keycap({
   label,
+  altLabel,
   stringName,
   border,
   text,
@@ -42,17 +47,21 @@ function Keycap({
 }: {
   lane: Lane;
   label: string;
+  altLabel: string;
   stringName: string;
   border: string;
   text: string;
   cssVar: string;
   isPressed: boolean;
 }) {
+  const text1 = keyLabel(label);
+  const text2 = keyLabel(altLabel);
   return (
     <div className="flex w-[150px] flex-col items-center gap-1.5">
       <div
         className={cn(
-          "flex h-11 w-[54px] items-center justify-center rounded-sm border bg-paper-raised font-mono text-[18px] font-semibold",
+          "flex h-11 min-w-[54px] items-center justify-center gap-1.5 rounded-sm border bg-paper-raised px-2 font-mono font-semibold",
+          text1.length > 1 || text2.length > 1 ? "text-[12px]" : "text-[18px]",
           border,
           isPressed ? "text-[#131417]" : text,
         )}
@@ -65,7 +74,8 @@ function Keycap({
             : undefined
         }
       >
-        {label.toUpperCase()}
+        {text1}
+        {text2 && <span className="opacity-60">/ {text2}</span>}
       </div>
       <span className="font-mono text-[9.5px] uppercase tracking-label text-ink-faint">
         {stringName} string

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Music4, Settings } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
@@ -15,8 +15,12 @@ import {
   DialogClose,
 } from "@/components/ui/Dialog";
 import { LANE_COLORS } from "../data/laneColors";
+import { cn } from "@/lib/cn";
 import {
+  keyLabel,
+  normalizeBindingKey,
   sanitizePracticeSettings,
+  type LaneKeys,
   type PracticeSettings,
 } from "../data/practiceSettings";
 
@@ -48,6 +52,33 @@ export function PracticeSettingsDialog({
 }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(settings);
+  /** Which binding slot is waiting for a keypress, if any. */
+  const [listening, setListening] = useState<{ lane: number; alt: boolean } | null>(null);
+
+  useEffect(() => {
+    if (!open) setListening(null);
+  }, [open]);
+
+  function bindKey(lane: number, alt: boolean, key: string | null) {
+    const keys = [...draft.keys] as LaneKeys;
+    const altKeys = [...draft.altKeys] as LaneKeys;
+    if (key) {
+      // A key can only drive one lane — unbind it wherever else it was set.
+      for (let i = 0; i < 4; i++) {
+        if (altKeys[i] === key) altKeys[i] = "";
+        if (keys[i] === key && i !== lane) {
+          keys[i] = altKeys[i] || keys[i];
+          altKeys[i] = "";
+        }
+      }
+    }
+    if (alt) {
+      altKeys[lane] = key ?? "";
+    } else if (key) {
+      keys[lane] = key;
+    }
+    setDraft({ ...draft, keys, altKeys });
+  }
 
   return (
     <Dialog
@@ -83,24 +114,37 @@ export function PracticeSettingsDialog({
             </p>
             <div className="grid grid-cols-4 gap-2">
               {LANE_COLORS.map((lane) => (
-                <label key={lane.lane} className="flex flex-col items-center gap-1">
+                <div key={lane.lane} className="flex flex-col items-center gap-1">
                   <span className={`font-mono text-[9.5px] uppercase tracking-label ${lane.text}`}>
                     {lane.name}
                   </span>
-                  <input
-                    value={draft.keys[lane.lane].toUpperCase()}
-                    onChange={(e) => {
-                      const value = e.target.value.slice(-1) || draft.keys[lane.lane];
-                      const keys = [...draft.keys] as [string, string, string, string];
-                      keys[lane.lane] = value.toLowerCase();
-                      setDraft({ ...draft, keys });
+                  <KeyBinder
+                    value={draft.keys[lane.lane]}
+                    listening={listening?.lane === lane.lane && !listening.alt}
+                    onListen={() => setListening({ lane: lane.lane, alt: false })}
+                    onBind={(key) => {
+                      bindKey(lane.lane, false, key);
+                      setListening(null);
                     }}
-                    maxLength={1}
-                    className="h-9 w-full rounded-sm border border-ink bg-paper text-center font-mono text-sm uppercase text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                    onCancel={() => setListening(null)}
                   />
-                </label>
+                  <KeyBinder
+                    value={draft.altKeys[lane.lane]}
+                    clearable
+                    listening={listening?.lane === lane.lane && listening.alt}
+                    onListen={() => setListening({ lane: lane.lane, alt: true })}
+                    onBind={(key) => {
+                      bindKey(lane.lane, true, key);
+                      setListening(null);
+                    }}
+                    onCancel={() => setListening(null)}
+                  />
+                </div>
               ))}
             </div>
+            <p className="mt-2 font-mono text-[10px] text-ink-faint">
+              Click a box, then press a key. Second row is optional; Backspace clears it.
+            </p>
           </div>
 
           <label className="flex items-center justify-between gap-3 font-mono text-xs text-ink-muted">
@@ -156,6 +200,53 @@ export function PracticeSettingsDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * One binding slot. Click to arm it, then the next keypress is captured
+ * (`KeyboardEvent.key`, so ; Space and arrows all work). Escape cancels;
+ * Backspace clears when `clearable`.
+ */
+function KeyBinder({
+  value,
+  clearable = false,
+  listening,
+  onListen,
+  onBind,
+  onCancel,
+}: {
+  value: string;
+  clearable?: boolean;
+  listening: boolean;
+  onListen: () => void;
+  onBind: (key: string | null) => void;
+  onCancel: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onListen}
+      onBlur={() => listening && onCancel()}
+      onKeyDown={(e) => {
+        if (!listening) return;
+        // Keep the keypress from reaching the dialog (Escape closes it) and
+        // from activating the button (Space/Enter).
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === "Escape") return onCancel();
+        if (clearable && (e.key === "Backspace" || e.key === "Delete")) return onBind(null);
+        const key = normalizeBindingKey(e.key);
+        if (key) onBind(key);
+      }}
+      className={cn(
+        "h-9 w-full rounded-sm border bg-paper text-center font-mono text-sm text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+        listening ? "border-accent animate-pulse" : "border-ink",
+        !value && !listening && "border-dashed text-ink-faint",
+      )}
+    >
+      {listening ? "…" : keyLabel(value) || "—"}
+    </button>
   );
 }
 
