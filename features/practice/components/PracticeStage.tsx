@@ -5,12 +5,21 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import type { Song } from "@/features/library/types/song";
-import { getAudioSync } from "@/features/library/data/songStore";
+import {
+  AUDIO_SYNC_EVENT,
+  AUDIO_SYNC_KEY,
+  getAudioSync,
+  patchAudioSync,
+  type AudioSyncSettings,
+  type StoredSyncMap,
+} from "@/features/library/data/songStore";
 import { base64ToBytes } from "@/features/library/data/tabFile";
+import { AudioOffsetControl } from "@/features/player/components/AudioOffsetControl";
 import { getBackingAudio } from "@/features/player/data/audioStore";
 import { buildPlaybackSyncMap } from "@/features/player/data/buildSyncMap";
 import { AudioClock } from "@/features/player/data/audioClock";
 import { getAudioContext, unlockAudio } from "@/features/player/data/audioEngine";
+import { OffsetSyncGenerator } from "@/features/player/data/syncGenerator";
 import type { SyncMap } from "@/features/player/data/syncMap";
 import { buildChart, pickBassTrackIndex, UnsupportedTrackError } from "../data/buildChart";
 import {
@@ -50,6 +59,14 @@ const LEAD_IN_SEC = 1.2;
 const WEAK_WINDOW_BARS = 4;
 const BAR_PASS_THRESHOLD = 70;
 const POP_LIFETIME_SEC = 0.6;
+const OFFSET_CLAMP_MS = 5000;
+const SYNC_PERSIST_DEBOUNCE_MS = 400;
+
+const SYNC_SOURCE_LABEL: Record<"dtw" | "offset" | "none", string> = {
+  dtw: "DTW aligned",
+  offset: "Linear offset",
+  none: "Not synced",
+};
 
 const JUDGEMENT_LABEL: Record<NoteJudgement, string> = {
   perfect: "Perfect",
@@ -158,16 +175,75 @@ export function PracticeStage({
     };
   }, [songId]);
 
-  const syncMap = useMemo(() => {
-    if (!chart) return null;
-    const stored = getAudioSync(songId);
+  // --- sync settings (offset / DTW map) -----------------------------------------
+  //
+  // The same persisted settings the score player reads and writes
+  // (`getAudioSync` / `patchAudioSync`), so DTW alignment run from an import or
+  // from the player carries straight over here, and an offset nudge made in
+  // practice mode is visible back in the player too.
+  const [offsetMs, setOffsetMs] = useState(0);
+  const [storedSyncMap, setStoredSyncMap] = useState<StoredSyncMap | null>(null);
+  const [dtwStatus, setDtwStatus] = useState<AudioSyncSettings["dtwStatus"]>();
+  const [syncSettingsLoaded, setSyncSettingsLoaded] = useState(false);
+  const [autoAligning, setAutoAligning] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | undefined>();
+  const selfWritingSyncRef = useRef(false);
+  const offsetPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    setSyncSettingsLoaded(false);
+    const sync = getAudioSync(songId);
+    setOffsetMs(sync?.offsetMs ?? 0);
+    setStoredSyncMap(sync?.syncMap ?? null);
+    setDtwStatus(sync?.dtwStatus);
+    setSyncSettingsLoaded(true);
+  }, [songId]);
+
+  // The sync-debug page and the score player write to the same store — reload
+  // whenever a DTW run lands or an offset/anchor changes elsewhere, so a chart
+  // already open here picks up the real alignment instead of the offset
+  // fallback it may have started with.
+  useEffect(() => {
+    const reload = () => {
+      if (selfWritingSyncRef.current) return;
+      const sync = getAudioSync(songId);
+      setOffsetMs(sync?.offsetMs ?? 0);
+      setStoredSyncMap(sync?.syncMap ?? null);
+      setDtwStatus(sync?.dtwStatus);
+    };
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== null && e.key !== AUDIO_SYNC_KEY) return;
+      reload();
+    };
+    window.addEventListener("storage", onStorage);
+    window.addEventListener(AUDIO_SYNC_EVENT, reload);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener(AUDIO_SYNC_EVENT, reload);
+    };
+  }, [songId]);
+
+  const persistSync = useCallback(
+    (patch: Partial<AudioSyncSettings>) => {
+      selfWritingSyncRef.current = true;
+      try {
+        patchAudioSync(songId, patch);
+      } finally {
+        selfWritingSyncRef.current = false;
+      }
+    },
+    [songId],
+  );
+
+  const { syncMap, syncSource } = useMemo(() => {
+    if (!chart) return { syncMap: null, syncSource: "none" as const };
     return buildPlaybackSyncMap({
-      stored: stored?.syncMap ?? null,
-      offsetMs: stored?.offsetMs ?? 0,
+      stored: storedSyncMap,
+      offsetMs,
       scoreEndSec: chart.durationSec,
       audioDurationSec,
-    }).syncMap;
-  }, [songId, chart, audioDurationSec]);
+    });
+  }, [chart, storedSyncMap, offsetMs, audioDurationSec]);
   syncMapRef.current = syncMap;
 
   useEffect(() => {
@@ -183,7 +259,80 @@ export function PracticeStage({
     };
   }, [hasBacking]);
 
-  const canPlay = hasBacking && syncMap != null;
+  // A song whose DTW mapping is still being solved isn't ready to practice
+  // against — the highway would track a straight-line guess and then jump
+  // when the real alignment lands mid-run, same as the player's own guard.
+  const waitingForAlignment = dtwStatus === "pending" || dtwStatus === "queued";
+  const canPlay =
+    hasBacking && syncMap != null && syncSettingsLoaded && !waitingForAlignment;
+
+  const handleOffsetChange = useCallback(
+    (nextMs: number) => {
+      const clamped = Math.max(-OFFSET_CLAMP_MS, Math.min(OFFSET_CLAMP_MS, Math.round(nextMs)));
+      const deltaSec = (clamped - offsetMs) / 1000;
+      setOffsetMs(clamped);
+
+      // A nudge on top of a DTW map slides the whole curve (points and
+      // anchors together) so manual trim still works over the real alignment.
+      let nextMap = storedSyncMap;
+      if (storedSyncMap && deltaSec !== 0) {
+        nextMap = {
+          ...storedSyncMap,
+          points: storedSyncMap.points.map((p) => ({
+            ...p,
+            audioTime: Math.max(0, p.audioTime + deltaSec),
+          })),
+          anchors: storedSyncMap.anchors?.map((a) => ({
+            ...a,
+            audioTime: Math.max(0, a.audioTime + deltaSec),
+          })),
+        };
+        setStoredSyncMap(nextMap);
+      }
+
+      if (offsetPersistTimer.current) clearTimeout(offsetPersistTimer.current);
+      offsetPersistTimer.current = setTimeout(() => {
+        persistSync({ offsetMs: clamped, ...(nextMap ? { syncMap: nextMap } : {}) });
+      }, SYNC_PERSIST_DEBOUNCE_MS);
+    },
+    [offsetMs, storedSyncMap, persistSync],
+  );
+
+  const handleOffsetReset = useCallback(() => {
+    setStoredSyncMap(null);
+    setOffsetMs(0);
+    setSyncMessage(undefined);
+    persistSync({ offsetMs: 0, syncMap: undefined });
+  }, [persistSync]);
+
+  /** Fast in-browser alignment: first-onset offset + global linear fit. */
+  const handleAutoAlign = useCallback(async () => {
+    setAutoAligning(true);
+    setSyncMessage(undefined);
+    try {
+      const blob = await getBackingAudio(songId);
+      if (!blob) return;
+      const result = await new OffsetSyncGenerator().generate({
+        songId,
+        gpBytes: base64ToBytes(tabData),
+        audioBlob: blob,
+        scoreDurationSec: chart?.durationSec ?? 0,
+        audioDurationSec,
+      });
+      const offsetSec = (result.diagnostics?.offsetSec as number | undefined) ?? 0;
+      setStoredSyncMap(null);
+      handleOffsetChange(Math.round(offsetSec * 1000));
+      if (result.status === "low-confidence") setSyncMessage(result.message);
+    } finally {
+      setAutoAligning(false);
+    }
+  }, [songId, tabData, chart, audioDurationSec, handleOffsetChange]);
+
+  useEffect(() => {
+    return () => {
+      if (offsetPersistTimer.current) clearTimeout(offsetPersistTimer.current);
+    };
+  }, []);
 
   // --- settings ----------------------------------------------------------------
   const [settings, setSettingsState] = useState<PracticeSettings>(
@@ -629,7 +778,9 @@ export function PracticeStage({
               {chartError ??
                 (!hasBacking && chart
                   ? "Rhythm practice needs an imported recording for this song."
-                  : "Building the chart from the score…")}
+                  : chart && waitingForAlignment
+                    ? "Preparing synced playback — aligning the tab to the recording…"
+                    : "Building the chart from the score…")}
             </div>
           ) : (
             <>
@@ -674,6 +825,32 @@ export function PracticeStage({
                 onRestart={handleRestart}
                 onSpeedChange={handleSpeedChange}
               />
+              {hasBacking && (
+                <div className="flex flex-wrap items-center gap-2 border border-rule-strong bg-paper-raised px-4 py-2.5">
+                  <span className="font-mono text-[9.5px] uppercase tracking-label text-ink-faint">
+                    Sync
+                  </span>
+                  <span className="font-mono text-xs text-ink-muted">
+                    {SYNC_SOURCE_LABEL[syncSource]}
+                  </span>
+                  <span aria-hidden className="mx-1 h-5 w-px bg-dot" />
+                  <span className="font-mono text-[9.5px] uppercase tracking-label text-ink-faint">
+                    Offset
+                  </span>
+                  <AudioOffsetControl
+                    compact
+                    offsetMs={offsetMs}
+                    onChange={handleOffsetChange}
+                    onReset={handleOffsetReset}
+                    onAutoAlign={handleAutoAlign}
+                    autoAligning={autoAligning}
+                    disabled={!syncSettingsLoaded}
+                  />
+                  {syncMessage && (
+                    <span className="font-mono text-[10px] text-accent">{syncMessage}</span>
+                  )}
+                </div>
+              )}
             </>
           )}
         </>
