@@ -113,6 +113,7 @@ export async function buildChart(
     t: n.scoreTime,
     lane: (n.string! - 1) as Lane,
     fret: n.fret!,
+    midi: n.midi,
     bar: barAt(n.scoreTime),
     state: null,
   }));
