@@ -46,6 +46,14 @@ const config: Config = {
         track: themed("track"),
         dot: themed("dot"),
 
+        /** Rhythm-mode highway: one hue per bass string, E to G. */
+        string: {
+          e: "oklch(var(--string-e) / <alpha-value>)",
+          a: "oklch(var(--string-a) / <alpha-value>)",
+          d: "oklch(var(--string-d) / <alpha-value>)",
+          g: "oklch(var(--string-g) / <alpha-value>)",
+        },
+
         // Aliases kept so pre-existing `bg-surface*` classes keep compiling.
         surface: {
           DEFAULT: themed("paper"),

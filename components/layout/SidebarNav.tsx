@@ -15,7 +15,7 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <nav className="flex flex-col">
-      {navItems.map(({ href, label, comingSoon }, i) => {
+      {navItems.map(({ href, label, comingSoon, isNew }, i) => {
         const active = pathname === href || pathname.startsWith(`${href}/`);
         return (
           <Link
@@ -47,6 +47,11 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
             {comingSoon && (
               <span className="ml-auto font-mono text-[8.5px] uppercase tracking-[0.16em] text-ink-ghost">
                 Soon
+              </span>
+            )}
+            {isNew && (
+              <span className="ml-auto font-mono text-[8.5px] uppercase tracking-[0.16em] text-accent">
+                New
               </span>
             )}
           </Link>

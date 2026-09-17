@@ -3,6 +3,8 @@ export interface NavItem {
   label: string;
   /** Not yet implemented — rendered with a SOON badge and no link target. */
   comingSoon?: boolean;
+  /** Recently shipped — rendered with a NEW badge until the user visits it. */
+  isNew?: boolean;
 }
 
 /**
@@ -12,6 +14,6 @@ export interface NavItem {
 export const navItems: NavItem[] = [
   { href: "/library", label: "Library" },
   { href: "/player", label: "Player", comingSoon: true },
-  { href: "/practice", label: "Practice", comingSoon: true },
+  { href: "/practice", label: "Practice", isNew: true },
   { href: "/settings", label: "Settings", comingSoon: true },
 ];

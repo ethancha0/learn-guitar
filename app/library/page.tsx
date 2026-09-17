@@ -9,7 +9,7 @@ export default function LibraryPage() {
       <PageHeader
         eyebrow={<CatalogueEyebrow />}
         title="Library"
-        subtitle="Your imported songs. Pick one to open the player."
+        subtitle="Open the score, or drop into rhythm practice."
         actions={<ImportSongDialog />}
       />
       <LibrarySongGrid />

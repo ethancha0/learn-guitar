@@ -222,6 +222,13 @@ interface AlphaTabPlayerProps {
    * knows these, and they arrive asynchronously as the score loads.
    */
   onScoreMeta?: (meta: ScoreMeta) => void;
+  /**
+   * A bar range to loop as soon as the score is ready — e.g. "Loop bars
+   * 13–16" from a rhythm-practice run summary. Applied once, on the first
+   * load; a later change is ignored so it doesn't fight a range the user
+   * picks by hand afterwards.
+   */
+  initialLoopRange?: { startBar: number; endBar: number };
 }
 
 /** Metadata the player lifts out of the loaded score for the page masthead. */
@@ -243,6 +250,7 @@ export function AlphaTabPlayer({
   songId,
   tabData,
   onScoreMeta,
+  initialLoopRange,
 }: AlphaTabPlayerProps) {
   // Held in a ref so a new callback identity from the parent can't restart the
   // alphaTab setup effect.
@@ -1406,6 +1414,20 @@ export function AlphaTabPlayer({
       clearLoopRange();
     }
   }
+
+  // Apply an incoming "Loop bars N–M" range (e.g. from a rhythm-practice run
+  // summary) once the bar/tick table is ready. Guarded by a ref rather than a
+  // dependency on the range itself, so it fires exactly once per song load and
+  // never re-applies over a range the user has since changed by hand.
+  const appliedInitialLoopRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!initialLoopRange || barTicks.length === 0) return;
+    if (appliedInitialLoopRef.current === songId) return;
+    appliedInitialLoopRef.current = songId;
+    applyLoopRange(initialLoopRange);
+    setLooping(true);
+    if (apiRef.current) apiRef.current.isLooping = true;
+  }, [initialLoopRange, barTicks, songId, applyLoopRange]);
 
   function toggleCountIn() {
     const next = !countInEnabled;

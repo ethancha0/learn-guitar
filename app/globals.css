@@ -36,6 +36,20 @@
   --wash: rgba(22, 24, 28, 0.06);
 }
 
+/*
+ * Rhythm-mode string colors — one hue per bass string (E A D G), at the
+ * accent's own chroma/lightness so the highway reads as part of this
+ * identity rather than a different app. The highway always renders on the
+ * Lamp surface regardless of the active theme, so these are unscoped rather
+ * than redeclared per theme.
+ */
+:root {
+  --string-e: 0.68 0.16 27;
+  --string-a: 0.72 0.15 75;
+  --string-d: 0.7 0.13 215;
+  --string-g: 0.72 0.14 150;
+}
+
 .dark {
   color-scheme: dark;
 
