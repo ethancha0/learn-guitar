@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  GOOD_WINDOW_SEC,
+  PERFECT_WINDOW_SEC,
   applyHitCondition,
   applyMissCondition,
   findNearestNote,
@@ -8,20 +10,21 @@ import {
 } from "./judge";
 
 describe("judgeOffset", () => {
-  it("is perfect inside 55ms", () => {
+  it("is perfect inside the perfect window", () => {
     expect(judgeOffset(0)).toBe("perfect");
-    expect(judgeOffset(0.03)).toBe("perfect");
-    expect(judgeOffset(-0.05)).toBe("perfect");
+    expect(judgeOffset(PERFECT_WINDOW_SEC - 0.001)).toBe("perfect");
+    expect(judgeOffset(-(PERFECT_WINDOW_SEC - 0.001))).toBe("perfect");
   });
 
-  it("is good between 55ms and 110ms", () => {
-    expect(judgeOffset(0.08)).toBe("good");
-    expect(judgeOffset(-0.09)).toBe("good");
+  it("is good between the perfect and good windows", () => {
+    const mid = (PERFECT_WINDOW_SEC + GOOD_WINDOW_SEC) / 2;
+    expect(judgeOffset(mid)).toBe("good");
+    expect(judgeOffset(-mid)).toBe("good");
   });
 
-  it("is early/late beyond 110ms, by sign", () => {
-    expect(judgeOffset(-0.15)).toBe("early");
-    expect(judgeOffset(0.15)).toBe("late");
+  it("is early/late beyond the good window, by sign", () => {
+    expect(judgeOffset(-(GOOD_WINDOW_SEC + 0.02))).toBe("early");
+    expect(judgeOffset(GOOD_WINDOW_SEC + 0.02)).toBe("late");
   });
 });
 

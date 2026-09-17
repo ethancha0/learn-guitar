@@ -14,8 +14,6 @@ export interface PracticeNote {
   t: number;
   lane: Lane;
   fret: number;
-  /** Hold length in seconds; 0 for a plain hit. */
-  hold: number;
   /** 1-based bar number, for the per-bar accuracy chart. */
   bar: number;
   state: NoteJudgement | null;

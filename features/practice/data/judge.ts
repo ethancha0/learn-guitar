@@ -6,9 +6,9 @@
 
 import type { NoteJudgement } from "../types/practice";
 
-export const DEFAULT_HIT_WINDOW_SEC = 0.17;
-export const PERFECT_WINDOW_SEC = 0.055;
-export const GOOD_WINDOW_SEC = 0.11;
+export const DEFAULT_HIT_WINDOW_SEC = 0.2;
+export const PERFECT_WINDOW_SEC = 0.065;
+export const GOOD_WINDOW_SEC = 0.13;
 
 export const JUDGEMENT_POINTS: Record<Exclude<NoteJudgement, "miss">, number> = {
   perfect: 100,

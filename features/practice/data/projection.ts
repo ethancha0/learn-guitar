@@ -21,6 +21,14 @@ export const LANE_BOUNDARIES_AT_HIT: readonly number[] = [120, 370, 620, 870, 11
 export const NOTE_WIDTH_AT_HIT = 150;
 export const NOTE_HEIGHT_AT_HIT = 34;
 
+/**
+ * The hit-zone reticle drawn at the hit line — deliberately bigger than the
+ * note itself so the "where to land it" target reads as generous, matching
+ * the widened timing window in `judge.ts`.
+ */
+export const HIT_ZONE_WIDTH_AT_HIT = 190;
+export const HIT_ZONE_HEIGHT_AT_HIT = 46;
+
 const PERSPECTIVE_K = 4.5;
 
 /** `f(z) = 1 / (1 + z * 4.5)`. */
