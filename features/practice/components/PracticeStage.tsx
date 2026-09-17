@@ -71,6 +71,11 @@ const POP_LIFETIME_SEC = 0.6;
 const OFFSET_CLAMP_MS = 5000;
 const SYNC_PERSIST_DEBOUNCE_MS = 400;
 
+/** Open-string MIDI pitches (E1/A1/D2/G2), lane-indexed — the fallback note
+ * for a whiff, so an off-beat press still sounds like *that string*, not a
+ * generic click, letting the player hear how far off they landed. */
+const OPEN_STRING_MIDI: readonly [number, number, number, number] = [28, 33, 38, 43];
+
 const SYNC_SOURCE_LABEL: Record<"dtw" | "offset" | "none", string> = {
   dtw: "DTW aligned",
   offset: "Linear offset",
@@ -440,6 +445,8 @@ export function PracticeStage({
   // --- sync diagnostics panel --------------------------------------------------
   const diagEnabled = useSyncDiagnosticsEnabled();
   const [diagOpen, setDiagOpen] = useState(false);
+  const diagOpenRef = useRef(diagOpen);
+  diagOpenRef.current = diagOpen;
 
   useEffect(() => {
     return () => {
@@ -623,7 +630,10 @@ export function PracticeStage({
         settingsRef.current.hitWindowSec,
       );
       if (!target) {
-        strikeSynthRef.current?.playWhiff(); // whiff — no combo break
+        // Whiff — no combo break, but still an audible, pitched note (the
+        // lane's open string) so the player can actually hear how far off
+        // their timing was instead of just seeing it.
+        strikeSynthRef.current?.playNote(OPEN_STRING_MIDI[lane], 0.55);
         return;
       }
       const offset = now - target.t;
@@ -700,22 +710,29 @@ export function PracticeStage({
         const now = clock.scoreNow(map);
         setT(now);
 
-        const hitWindow = settingsRef.current.hitWindowSec;
-        const missed = notesRef.current.filter(
-          (n) => n.state === null && now > n.t + hitWindow,
-        );
-        if (missed.length > 0) {
-          const missedIds = new Set(missed.map((n) => n.id));
-          setNotes((prev) =>
-            prev.map((n) => (missedIds.has(n.id) ? { ...n, state: "miss" } : n)),
+        // The diagnostics panel keeps the transport running (so its live
+        // offset readout stays meaningful) but suspends the fail/miss
+        // bookkeeping below — the player has stepped away from the highway
+        // to read the panel, not to get punished for notes they can no
+        // longer see coming.
+        if (!diagOpenRef.current) {
+          const hitWindow = settingsRef.current.hitWindowSec;
+          const missed = notesRef.current.filter(
+            (n) => n.state === null && now > n.t + hitWindow,
           );
-          for (const n of missed) registerJudgement("miss", n.lane, 0, now);
-        }
+          if (missed.length > 0) {
+            const missedIds = new Set(missed.map((n) => n.id));
+            setNotes((prev) =>
+              prev.map((n) => (missedIds.has(n.id) ? { ...n, state: "miss" } : n)),
+            );
+            for (const n of missed) registerJudgement("miss", n.lane, 0, now);
+          }
 
-        if (conditionRef.current <= 0) {
-          endRun("failed");
-        } else if (now >= chart.durationSec) {
-          endRun("completed");
+          if (conditionRef.current <= 0) {
+            endRun("failed");
+          } else if (now >= chart.durationSec) {
+            endRun("completed");
+          }
         }
       }
       raf = requestAnimationFrame(tick);
@@ -894,17 +911,7 @@ export function PracticeStage({
                     title="Sync diagnostics (DTW map, offset, drift)"
                     aria-pressed={diagOpen}
                     className={cn((diagOpen || dtwRunning) && engagedKey)}
-                    onClick={() => {
-                      // Opening the panel is a distraction from the highway,
-                      // not a request to fail the run on notes you can no
-                      // longer see coming — pause it, same as any other
-                      // "stepped away" moment.
-                      if (!diagOpen && phaseRef.current === "running") {
-                        audioRef.current?.pause();
-                        setPhase("paused");
-                      }
-                      setDiagOpen((o) => !o);
-                    }}
+                    onClick={() => setDiagOpen((o) => !o)}
                   >
                     <Activity className={cn("h-4 w-4", dtwRunning && "animate-pulse")} />
                   </Button>
@@ -1028,7 +1035,7 @@ export function PracticeStage({
           audioDurationSec={audioDurationSec}
           appliedPointCount={syncMap?.points.length ?? 0}
           scoreTimeSec={t}
-          audioTimeSec={audioRef.current?.currentTime ?? 0}
+          audioTimeSec={audioClockRef.current?.now() ?? audioRef.current?.currentTime ?? 0}
           anchors={anchors}
           onVerifyTransfer={() => ({
             error:
