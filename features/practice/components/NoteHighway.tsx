@@ -6,7 +6,6 @@ import { LANE_COLORS, oklchColor } from "../data/laneColors";
 import {
   CULL_Z_MAX,
   CULL_Z_MIN,
-  CX,
   FAR,
   HIT_Y,
   HIT_ZONE_HEIGHT_AT_HIT,
@@ -18,12 +17,7 @@ import {
   projectNote,
   screenX,
 } from "../data/projection";
-import type {
-  JudgeFlash,
-  JudgementPop,
-  PracticeNote,
-  RunPhase,
-} from "../types/practice";
+import type { JudgementPop, PracticeNote, RunPhase } from "../types/practice";
 
 const MISS_BORDER = "rgba(237,234,225,0.22)";
 const MISS_FILL = "rgba(237,234,225,0.05)";
@@ -51,7 +45,6 @@ export function NoteHighway({
   beatSec,
   barStartSec,
   pops,
-  flash,
   phase,
   score,
   accuracy,
@@ -69,7 +62,6 @@ export function NoteHighway({
   beatSec: readonly number[];
   barStartSec: readonly number[];
   pops: readonly JudgementPop[];
-  flash: JudgeFlash | null;
   phase: RunPhase;
   score: number;
   accuracy: number;
@@ -304,34 +296,6 @@ export function NoteHighway({
             </text>
           );
         })}
-
-        {/* Judgement flash. */}
-        {flash &&
-          (() => {
-            const elapsed = Math.max(0, t - flash.at);
-            const progress = Math.min(1, elapsed / 0.55);
-            if (progress >= 1) return null;
-            const color =
-              flash.judgement === "perfect"
-                ? INK
-                : flash.judgement === "miss"
-                  ? "rgb(var(--accent))"
-                  : oklchColor(LANE_COLORS[0].cssVar);
-            return (
-              <text
-                x={CX}
-                y={HIT_Y - 58}
-                fontSize={26}
-                fontWeight={700}
-                textAnchor="middle"
-                fill={color}
-                opacity={1 - progress}
-                fontFamily="var(--font-spectral)"
-              >
-                {flash.text}
-              </text>
-            );
-          })()}
 
         {/* Hit line, drawn last so it stays on top. */}
         <line x1={120} y1={HIT_Y} x2={1120} y2={HIT_Y} stroke={INK} strokeOpacity={0.45} strokeWidth={2} />
