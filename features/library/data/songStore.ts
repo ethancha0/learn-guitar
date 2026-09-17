@@ -404,6 +404,14 @@ export interface AudioSyncSettings {
   /** Persisted level for the synthesized reference tone of the shown track. */
   synthVol?: number;
   synthMuted?: boolean;
+  /**
+   * Practice mode's *input* synth — the note the player's own keystroke fires.
+   * A channel of its own rather than a share of `synthVol`: the whole point of
+   * that screen is hearing your strike against the reference, which means
+   * setting the two levels against each other.
+   */
+  strikeVol?: number;
+  strikeMuted?: boolean;
 }
 
 function readAudioSyncMap(): Record<string, AudioSyncSettings> {

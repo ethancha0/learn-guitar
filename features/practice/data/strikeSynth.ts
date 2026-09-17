@@ -17,18 +17,40 @@ function clamp(n: number, lo: number, hi: number): number {
 export class StrikeSynth {
   private ctx: AudioContext;
   private out: GainNode;
+  private level = 0.7;
 
   constructor(ctx: AudioContext, destination?: AudioNode) {
     this.ctx = ctx;
     this.out = ctx.createGain();
-    this.out.gain.value = 0.7;
+    this.out.gain.value = this.level;
     this.out.connect(destination ?? ctx.destination);
   }
 
+  /**
+   * Set the strike level.
+   *
+   * The short ramp is only there to keep a slider drag click-free, and it needs
+   * a clock to run against: a suspended context's `currentTime` is frozen, so
+   * the ramp is scheduled at a moment that has not arrived and `gain.value`
+   * still reads the old level. Write the value outright in that case — the
+   * mixer is then honoured by the first strike after the hardware starts,
+   * rather than by the second.
+   */
   setVolume(v: number): void {
+    const level = clamp(v, 0, 1);
+    this.level = level;
     const g = this.out.gain;
     g.cancelScheduledValues(this.ctx.currentTime);
-    g.setTargetAtTime(clamp(v, 0, 1), this.ctx.currentTime, 0.01);
+    if (this.ctx.state === "running") {
+      g.setTargetAtTime(level, this.ctx.currentTime, 0.01);
+    } else {
+      g.value = level;
+    }
+  }
+
+  /** The level last asked for, whether or not the ramp has landed. */
+  get volume(): number {
+    return this.level;
   }
 
   /** A struck note, at its real pitch — played the instant a hit registers. */

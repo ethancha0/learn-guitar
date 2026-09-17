@@ -28,6 +28,7 @@ import { getAudioContext, unlockAudio } from "@/features/player/data/audioEngine
 import { OffsetSyncGenerator } from "@/features/player/data/syncGenerator";
 import { useSyncDiagnosticsEnabled } from "@/features/player/data/syncDiagnosticsFlag";
 import type { SyncMap } from "@/features/player/data/syncMap";
+import { extractTrackNotes, TrackSynth } from "@/features/player/data/trackSynth";
 import { decodeAudio } from "@/features/player/data/waveform";
 import { buildChart, pickBassTrackIndex, UnsupportedTrackError } from "../data/buildChart";
 import {
@@ -111,11 +112,15 @@ export function PracticeStage({
   // --- chart -----------------------------------------------------------------
   const [chart, setChart] = useState<PracticeChart | null>(null);
   const [chartError, setChartError] = useState<string | null>(null);
+  // Which track the chart was built from — the reference synth has to play the
+  // same part the lanes are asking for, not the file's default track.
+  const [bassTrackIndex, setBassTrackIndex] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setChart(null);
     setChartError(null);
+    setBassTrackIndex(null);
     const bytes = base64ToBytes(tabData);
     // Practice mode plays whichever track actually reads as the bass part,
     // not whatever track the score player happens to be showing — a song's
@@ -129,6 +134,7 @@ export function PracticeStage({
           setChartError("This song has no 4-string bass track to practice.");
           return null;
         }
+        setBassTrackIndex(bassIndex);
         return buildChart(bytes, bassIndex);
       })
       .then((c) => {
@@ -226,12 +232,17 @@ export function PracticeStage({
   const selfWritingSyncRef = useRef(false);
   const offsetPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Backing recording + synth reference levels — same fields the player's
-  // mixer reads and writes, so a level set here carries over there too.
+  // Three channels. The recording and the reference tone are the *same* stored
+  // fields the player's mixer reads and writes, so a level set in either place
+  // carries over; the strike channel is practice-only and has fields of its
+  // own, because "how loud am I" and "how loud is the tab" have to be balanced
+  // against each other and a single level cannot do both.
   const [backingVol, setBackingVol] = useState(0.85);
   const [backingMuted, setBackingMuted] = useState(false);
   const [synthVol, setSynthVol] = useState(0.6);
   const [synthMuted, setSynthMuted] = useState(false);
+  const [strikeVol, setStrikeVol] = useState(0.6);
+  const [strikeMuted, setStrikeMuted] = useState(false);
   const mixerPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -244,6 +255,8 @@ export function PracticeStage({
     if (typeof sync?.backingMuted === "boolean") setBackingMuted(sync.backingMuted);
     if (typeof sync?.synthVol === "number") setSynthVol(sync.synthVol);
     if (typeof sync?.synthMuted === "boolean") setSynthMuted(sync.synthMuted);
+    if (typeof sync?.strikeVol === "number") setStrikeVol(sync.strikeVol);
+    if (typeof sync?.strikeMuted === "boolean") setStrikeMuted(sync.strikeMuted);
     setSyncSettingsLoaded(true);
   }, [songId]);
 
@@ -316,19 +329,39 @@ export function PracticeStage({
     if (audio) audio.volume = backingMuted ? 0 : Math.min(1, backingVol);
     if (mixerPersistTimer.current) clearTimeout(mixerPersistTimer.current);
     mixerPersistTimer.current = setTimeout(() => {
-      persistSync({ backingVol, backingMuted, synthVol, synthMuted });
+      persistSync({
+        backingVol,
+        backingMuted,
+        synthVol,
+        synthMuted,
+        strikeVol,
+        strikeMuted,
+      });
     }, SYNC_PERSIST_DEBOUNCE_MS);
     return () => {
       if (mixerPersistTimer.current) clearTimeout(mixerPersistTimer.current);
     };
-  }, [backingVol, backingMuted, synthVol, synthMuted, hasBacking, persistSync]);
+  }, [
+    backingVol,
+    backingMuted,
+    synthVol,
+    synthMuted,
+    strikeVol,
+    strikeMuted,
+    hasBacking,
+    persistSync,
+  ]);
 
-  // --- strike synth: a real bass note on every hit, a dead click on a whiff --------
+  // --- strike synth: the note *you* played, the instant you played it -----------
   const strikeSynthRef = useRef<StrikeSynth | null>(null);
+  // The mixer level, readable without waiting for an effect, so a synth built
+  // before the stored settings land doesn't start at the class default.
+  const strikeLevelRef = useRef(0.6);
   useEffect(() => {
     const ctx = getAudioContext();
     if (!ctx) return;
     const synth = new StrikeSynth(ctx);
+    synth.setVolume(strikeLevelRef.current);
     strikeSynthRef.current = synth;
     return () => {
       synth.dispose();
@@ -336,8 +369,85 @@ export function PracticeStage({
     };
   }, []);
   useEffect(() => {
-    strikeSynthRef.current?.setVolume(synthMuted ? 0 : synthVol);
+    strikeLevelRef.current = strikeMuted ? 0 : strikeVol;
+    strikeSynthRef.current?.setVolume(strikeLevelRef.current);
+  }, [strikeVol, strikeMuted]);
+
+  // --- reference synth: the same tab, played perfectly ---------------------------
+  //
+  // The player's `TrackSynth`, on the same `<audio>` element and the same sync
+  // map, so the bass line sounds exactly where the score says it should. Against
+  // the strike synth above — which fires the moment a key goes down — the gap
+  // between the two *is* the timing error, heard as flam rather than read off a
+  // judgement label. Two channels, because hearing that gap means being able to
+  // balance "me" against "the tab".
+  const refSynthRef = useRef<TrackSynth | null>(null);
+  const refLevelRef = useRef(0.6);
+  useEffect(() => {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    const synth = new TrackSynth(ctx);
+    synth.setVolume(refLevelRef.current);
+    refSynthRef.current = synth;
+    return () => {
+      synth.stop();
+      synth.dispose();
+      refSynthRef.current = null;
+    };
+  }, []);
+  useEffect(() => {
+    refLevelRef.current = synthMuted ? 0 : synthVol;
+    refSynthRef.current?.setVolume(refLevelRef.current);
   }, [synthVol, synthMuted]);
+
+  /** Start or stop the reference synth to match the recording's transport. */
+  const syncRefPlayback = useCallback(() => {
+    const synth = refSynthRef.current;
+    const audio = audioRef.current;
+    if (!synth || !audio) return;
+    if (!audio.paused && !audio.ended) {
+      synth.start(audio.currentTime, audio.playbackRate || 1);
+    } else {
+      synth.stop();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (bassTrackIndex === null) return;
+    let cancelled = false;
+    extractTrackNotes(base64ToBytes(tabData), bassTrackIndex)
+      .then((notes) => {
+        if (cancelled) return;
+        refSynthRef.current?.setNotes(notes);
+        syncRefPlayback();
+      })
+      .catch((err) => {
+        console.error("[PracticeStage] reference track notes failed", err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tabData, bassTrackIndex, syncRefPlayback]);
+
+  useEffect(() => {
+    refSynthRef.current?.setSyncMap(syncMap);
+    syncRefPlayback();
+  }, [syncMap, syncRefPlayback]);
+
+  // Re-anchor on every transport event, so a seek (which is how a run starts
+  // and restarts), a pause or a speed change never leaves the reference
+  // playing against a stale time reference.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !hasBacking) return;
+    const events = ["play", "playing", "pause", "seeked", "ratechange", "ended"];
+    for (const ev of events) audio.addEventListener(ev, syncRefPlayback);
+    syncRefPlayback();
+    return () => {
+      for (const ev of events) audio.removeEventListener(ev, syncRefPlayback);
+      refSynthRef.current?.stop();
+    };
+  }, [hasBacking, syncRefPlayback]);
 
   // A song whose DTW mapping is still being solved isn't ready to practice
   // against — the highway would track a straight-line guess and then jump
@@ -619,10 +729,25 @@ export function PracticeStage({
         next[lane] = true;
         return next;
       });
-      if (phaseRef.current !== "running") return;
+      // A keystroke is a user gesture, and the only one this screen is
+      // guaranteed to get: the context is built at mount, before any gesture,
+      // so it is suspended unless the origin has an autoplay allowance (which
+      // localhost, visited constantly, tends to have and a production domain
+      // does not). Unlocking here rather than only at run start means the
+      // strike tone is never silent while the recording plays on regardless.
+      unlockAudio();
+      const synth = strikeSynthRef.current;
       const clock = audioClockRef.current;
       const map = syncMapRef.current;
-      if (!clock || !map) return;
+      const scoring = phaseRef.current === "running" && clock != null && map != null;
+      // Idle, paused, or mid-strike with nothing in the hit window: no combo
+      // break, but still an audible, pitched note (the lane's open string) so
+      // a keystroke always sounds and a whiff is heard, not just seen.
+      const openString = () => synth?.playNote(OPEN_STRING_MIDI[lane], 0.55);
+      if (!scoring) {
+        openString();
+        return;
+      }
       const now = clock.scoreNow(map);
       const target = findNearestNote(
         notesRef.current,
@@ -631,10 +756,7 @@ export function PracticeStage({
         settingsRef.current.hitWindowSec,
       );
       if (!target) {
-        // Whiff — no combo break, but still an audible, pitched note (the
-        // lane's open string) so the player can actually hear how far off
-        // their timing was instead of just seeing it.
-        strikeSynthRef.current?.playNote(OPEN_STRING_MIDI[lane], 0.55);
+        openString();
         return;
       }
       const offset = now - target.t;
@@ -643,7 +765,7 @@ export function PracticeStage({
         prev.map((n) => (n.id === target.id ? { ...n, state: judgement } : n)),
       );
       registerJudgement(judgement, lane, offset, now);
-      strikeSynthRef.current?.playNote(target.midi);
+      synth?.playNote(target.midi);
     },
     [registerJudgement],
   );
@@ -984,14 +1106,25 @@ export function PracticeStage({
                     disabled={!syncSettingsLoaded}
                   />
                   <span className="ml-1.5 font-mono text-[9.5px] uppercase tracking-label text-ink-faint">
-                    Ref
+                    You
+                  </span>
+                  <SynthVolumeControl
+                    volume={strikeVol}
+                    muted={strikeMuted}
+                    onVolume={setStrikeVol}
+                    onMuteToggle={() => setStrikeMuted((m) => !m)}
+                    trackName="your strikes"
+                    disabled={!syncSettingsLoaded}
+                  />
+                  <span className="ml-1.5 font-mono text-[9.5px] uppercase tracking-label text-ink-faint">
+                    Tab
                   </span>
                   <SynthVolumeControl
                     volume={synthVol}
                     muted={synthMuted}
                     onVolume={setSynthVol}
                     onMuteToggle={() => setSynthMuted((m) => !m)}
-                    trackName="bass strikes"
+                    trackName="tab, played perfectly"
                     disabled={!syncSettingsLoaded}
                   />
                   <span aria-hidden className="mx-1 h-5 w-px bg-dot" />
