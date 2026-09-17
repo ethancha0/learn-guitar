@@ -1,8 +1,8 @@
 "use client";
 
-import { use, useCallback, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, useSearchParams } from "next/navigation";
 import {
   addImportedSong,
   useSongById,
@@ -25,6 +25,18 @@ export default function PlayerPage({
 }) {
   const { songId } = use(params);
   const song = useSongById(songId);
+  const searchParams = useSearchParams();
+  const initialLoopRange = useMemo(() => {
+    const startBar = Number(searchParams.get("loopStart"));
+    const endBar = Number(searchParams.get("loopEnd"));
+    if (!Number.isFinite(startBar) || !Number.isFinite(endBar)) return undefined;
+    if (startBar < 1 || endBar < 1) return undefined;
+    return { startBar, endBar };
+    // Read once on the landing navigation; a later search-param change (there
+    // isn't one from inside the player) shouldn't re-trigger the one-shot
+    // apply in AlphaTabPlayer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [songId]);
   const [hydrated, setHydrated] = useState(false);
   const [checkingAccount, setCheckingAccount] = useState(false);
   const [accountChecked, setAccountChecked] = useState(false);
@@ -114,6 +126,7 @@ export default function PlayerPage({
           songId={songId}
           tabData={song.tabData}
           onScoreMeta={handleScoreMeta}
+          initialLoopRange={initialLoopRange}
         />
       ) : accountLoadError ? (
         <AccountSongError message={accountLoadError} />
