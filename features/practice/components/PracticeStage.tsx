@@ -38,6 +38,7 @@ import {
   type PracticeNote,
   type RunPhase,
 } from "../types/practice";
+import { JudgementFlashOverlay } from "./JudgementFlashOverlay";
 import { KeyRow } from "./KeyRow";
 import { NoteHighway } from "./NoteHighway";
 import { PracticeHud } from "./PracticeHud";
@@ -632,36 +633,38 @@ export function PracticeStage({
             </div>
           ) : (
             <>
-              <PracticeHud
-                score={score}
-                combo={combo}
-                accuracy={accuracy}
-                condition={condition}
-                bar={currentBar}
-                totalBars={chart.bars}
-              />
-              <NoteHighway
-                notes={notes}
-                t={t}
-                lookaheadSec={settings.noteSpeedSec}
-                beatSec={chart.beatSec}
-                barStartSec={chart.barStartSec}
-                pops={pops}
-                flash={flash}
-                phase={phase}
-                score={score}
-                accuracy={accuracy}
-                bestCombo={bestCombo}
-                keys={settings.keys}
-                showFretNumbers={settings.showFretNumbers}
-                onPrimaryAction={handlePrimaryAction}
-                containerRef={containerRef}
-                onFocusSurface={() => containerRef.current?.focus()}
-                onFocusChange={(focused) => {
-                  hasFocusRef.current = focused;
-                }}
-              />
-              <KeyRow keys={settings.keys} pressed={pressed} />
+              <div className="relative mx-auto flex w-full max-w-[1240px] flex-col gap-[18px]">
+                <PracticeHud
+                  score={score}
+                  combo={combo}
+                  accuracy={accuracy}
+                  condition={condition}
+                  bar={currentBar}
+                  totalBars={chart.bars}
+                />
+                <NoteHighway
+                  notes={notes}
+                  t={t}
+                  lookaheadSec={settings.noteSpeedSec}
+                  beatSec={chart.beatSec}
+                  barStartSec={chart.barStartSec}
+                  pops={pops}
+                  phase={phase}
+                  score={score}
+                  accuracy={accuracy}
+                  bestCombo={bestCombo}
+                  keys={settings.keys}
+                  showFretNumbers={settings.showFretNumbers}
+                  onPrimaryAction={handlePrimaryAction}
+                  containerRef={containerRef}
+                  onFocusSurface={() => containerRef.current?.focus()}
+                  onFocusChange={(focused) => {
+                    hasFocusRef.current = focused;
+                  }}
+                />
+                <KeyRow keys={settings.keys} pressed={pressed} />
+                <JudgementFlashOverlay flash={flash} t={t} />
+              </div>
               <PracticeTransport
                 playing={phase === "running"}
                 positionSec={t}
