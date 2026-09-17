@@ -5,17 +5,14 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import type { Song } from "@/features/library/types/song";
-import {
-  getAudioSync,
-  getPreferredTrackIndex,
-} from "@/features/library/data/songStore";
+import { getAudioSync } from "@/features/library/data/songStore";
 import { base64ToBytes } from "@/features/library/data/tabFile";
 import { getBackingAudio } from "@/features/player/data/audioStore";
 import { buildPlaybackSyncMap } from "@/features/player/data/buildSyncMap";
 import { AudioClock } from "@/features/player/data/audioClock";
 import { getAudioContext, unlockAudio } from "@/features/player/data/audioEngine";
 import type { SyncMap } from "@/features/player/data/syncMap";
-import { buildChart, UnsupportedTrackError } from "../data/buildChart";
+import { buildChart, pickBassTrackIndex, UnsupportedTrackError } from "../data/buildChart";
 import {
   applyHitCondition,
   applyMissCondition,
@@ -77,7 +74,6 @@ export function PracticeStage({
   tabData: string;
 }) {
   const router = useRouter();
-  const trackIndex = getPreferredTrackIndex(songId) ?? 0;
 
   // --- chart -----------------------------------------------------------------
   const [chart, setChart] = useState<PracticeChart | null>(null);
@@ -87,9 +83,23 @@ export function PracticeStage({
     let cancelled = false;
     setChart(null);
     setChartError(null);
-    buildChart(base64ToBytes(tabData), trackIndex)
+    const bytes = base64ToBytes(tabData);
+    // Practice mode plays whichever track actually reads as the bass part,
+    // not whatever track the score player happens to be showing — a song's
+    // default track is very often a guitar or vocal part, and picking that
+    // blindly rejected the song even when a perfectly good bass track sat
+    // right next to it in the same file.
+    pickBassTrackIndex(bytes)
+      .then((bassIndex) => {
+        if (cancelled) return null;
+        if (bassIndex === null) {
+          setChartError("This song has no 4-string bass track to practice.");
+          return null;
+        }
+        return buildChart(bytes, bassIndex);
+      })
       .then((c) => {
-        if (!cancelled) setChart(c);
+        if (!cancelled && c) setChart(c);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -102,7 +112,7 @@ export function PracticeStage({
     return () => {
       cancelled = true;
     };
-  }, [tabData, trackIndex]);
+  }, [tabData]);
 
   // --- audio + sync ------------------------------------------------------------
   const audioRef = useRef<HTMLAudioElement | null>(null);
