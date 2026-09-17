@@ -19,9 +19,6 @@ import type { Lane, PracticeChart, PracticeNote } from "../types/practice";
 
 export class UnsupportedTrackError extends Error {}
 
-/** A note this short (seconds) is a plain hit, not a hold. */
-const MIN_HOLD_SEC = 0.28;
-
 /** General MIDI program numbers for the acoustic/electric bass family. */
 const GM_BASS_PROGRAM_MIN = 32;
 const GM_BASS_PROGRAM_MAX = 39;
@@ -116,7 +113,6 @@ export async function buildChart(
     t: n.scoreTime,
     lane: (n.string! - 1) as Lane,
     fret: n.fret!,
-    hold: n.scoreDuration >= MIN_HOLD_SEC ? n.scoreDuration : 0,
     bar: barAt(n.scoreTime),
     state: null,
   }));

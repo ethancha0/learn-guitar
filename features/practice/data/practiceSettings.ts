@@ -7,6 +7,8 @@
  * `learn-bass.*` key, per-song data keyed by song id inside it.
  */
 
+import { DEFAULT_HIT_WINDOW_SEC } from "./judge";
+
 export interface PracticeSettings {
   /** J K L ; by default, lanes E A D G. */
   keys: [string, string, string, string];
@@ -19,7 +21,7 @@ export interface PracticeSettings {
 export const DEFAULT_PRACTICE_SETTINGS: PracticeSettings = {
   keys: ["j", "k", "l", ";"],
   noteSpeedSec: 1.6,
-  hitWindowSec: 0.17,
+  hitWindowSec: DEFAULT_HIT_WINDOW_SEC,
   showFretNumbers: true,
 };
 

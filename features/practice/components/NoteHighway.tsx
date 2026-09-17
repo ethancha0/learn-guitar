@@ -9,6 +9,8 @@ import {
   CX,
   FAR,
   HIT_Y,
+  HIT_ZONE_HEIGHT_AT_HIT,
+  HIT_ZONE_WIDTH_AT_HIT,
   HORIZON_Y,
   LANE_BOUNDARIES_AT_HIT,
   depthForOffset,
@@ -178,16 +180,17 @@ export function NoteHighway({
         {/* Horizon rule. */}
         <line x1={529.09} y1={30} x2={710.91} y2={30} stroke="rgba(237,234,225,0.2)" />
 
-        {/* Hit-zone targets. */}
+        {/* Hit-zone targets — sized bigger than the note itself so the
+            landing target reads as generous, matching the wider hit window. */}
         {LANE_COLORS.map((lane) => {
           const cx = [245, 495, 745, 995][lane.lane];
           return (
             <rect
               key={lane.lane}
-              x={cx - 75}
-              y={453}
-              width={150}
-              height={34}
+              x={cx - HIT_ZONE_WIDTH_AT_HIT / 2}
+              y={HIT_Y - HIT_ZONE_HEIGHT_AT_HIT / 2}
+              width={HIT_ZONE_WIDTH_AT_HIT}
+              height={HIT_ZONE_HEIGHT_AT_HIT}
               rx={2}
               fill="none"
               stroke={oklchColor(lane.cssVar, 0.55)}
@@ -239,26 +242,6 @@ export function NoteHighway({
             </text>
           );
         })}
-
-        {/* Hold tails. */}
-        {visibleNotes
-          .filter((n) => n.hold > 0 && n.state === null)
-          .map((n) => {
-            const z0 = depthForOffset(n.t - t, lookaheadSec);
-            const z1 = depthForOffset(n.t + n.hold - t, lookaheadSec);
-            const p0 = projectNote(n.lane, Math.max(CULL_Z_MIN, z0));
-            const p1 = projectNote(n.lane, Math.min(CULL_Z_MAX, z1));
-            const w0 = p0.width * 0.21;
-            const w1 = p1.width * 0.21;
-            const laneColor = LANE_COLORS[n.lane];
-            return (
-              <polygon
-                key={`hold-${n.id}`}
-                points={`${p0.x - w0},${p0.y} ${p0.x + w0},${p0.y} ${p1.x + w1},${p1.y} ${p1.x - w1},${p1.y}`}
-                fill={oklchColor(laneColor.cssVar, 0.26)}
-              />
-            );
-          })}
 
         {/* Notes. */}
         {visibleNotes.map((n) => {

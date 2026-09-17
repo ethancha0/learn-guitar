@@ -28,9 +28,9 @@ const NOTE_SPEED_OPTIONS: { value: number; label: string }[] = [
 ];
 
 const HIT_WINDOW_OPTIONS: { value: number; label: string }[] = [
-  { value: 0.12, label: "Tight" },
-  { value: 0.17, label: "Normal" },
-  { value: 0.22, label: "Loose" },
+  { value: 0.15, label: "Tight" },
+  { value: 0.2, label: "Normal" },
+  { value: 0.26, label: "Loose" },
 ];
 
 /**
