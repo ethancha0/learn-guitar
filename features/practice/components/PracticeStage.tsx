@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
+import { Activity, ArrowLeft } from "lucide-react";
+import { Button, engagedKey } from "@/components/ui/Button";
+import { cn } from "@/lib/cn";
 import type { Song } from "@/features/library/types/song";
 import {
   AUDIO_SYNC_EVENT,
@@ -15,11 +17,14 @@ import {
 } from "@/features/library/data/songStore";
 import { base64ToBytes } from "@/features/library/data/tabFile";
 import { AudioOffsetControl } from "@/features/player/components/AudioOffsetControl";
+import { SyncDiagnostics } from "@/features/player/components/SyncDiagnostics";
+import { queueAlignment, useAlignmentJob } from "@/features/player/data/alignmentQueue";
 import { getBackingAudio } from "@/features/player/data/audioStore";
 import { buildPlaybackSyncMap } from "@/features/player/data/buildSyncMap";
 import { AudioClock } from "@/features/player/data/audioClock";
 import { getAudioContext, unlockAudio } from "@/features/player/data/audioEngine";
 import { OffsetSyncGenerator } from "@/features/player/data/syncGenerator";
+import { useSyncDiagnosticsEnabled } from "@/features/player/data/syncDiagnosticsFlag";
 import type { SyncMap } from "@/features/player/data/syncMap";
 import { buildChart, pickBassTrackIndex, UnsupportedTrackError } from "../data/buildChart";
 import {
@@ -235,8 +240,10 @@ export function PracticeStage({
     [songId],
   );
 
-  const { syncMap, syncSource } = useMemo(() => {
-    if (!chart) return { syncMap: null, syncSource: "none" as const };
+  const { syncMap, syncSource, syncWarning, anchors } = useMemo(() => {
+    if (!chart) {
+      return { syncMap: null, syncSource: "none" as const, syncWarning: undefined, anchors: [] };
+    }
     return buildPlaybackSyncMap({
       stored: storedSyncMap,
       offsetMs,
@@ -327,6 +334,45 @@ export function PracticeStage({
       setAutoAligning(false);
     }
   }, [songId, tabData, chart, audioDurationSec, handleOffsetChange]);
+
+  /**
+   * Re-run offline DTW alignment via the shared queue — the same path a
+   * background job started at import time takes. The result lands in the
+   * `learn-bass.audio-sync` store, which the reload effect above picks up
+   * live, so the diagnostics panel updates the moment it finishes without a
+   * page reload.
+   */
+  const handleDtwAlign = useCallback(async () => {
+    setSyncMessage(undefined);
+    const blob = await getBackingAudio(songId);
+    if (!blob) {
+      setSyncMessage("No recording to align against.");
+      return;
+    }
+    await queueAlignment({
+      songId,
+      gpBytes: base64ToBytes(tabData),
+      audioBlob: blob,
+      scoreDurationSec: chart?.durationSec ?? 0,
+      audioDurationSec,
+      anchors: storedSyncMap?.anchors ?? [],
+      force: true,
+    });
+  }, [songId, tabData, chart, audioDurationSec, storedSyncMap]);
+
+  // Alignment runs in a shared queue, so a job started elsewhere (e.g. the
+  // import dialog, or the player in another tab) before this page mounted
+  // shows up here too.
+  const alignmentJob = useAlignmentJob(songId);
+  const dtwRunning =
+    alignmentJob?.state === "queued" || alignmentJob?.state === "running";
+  useEffect(() => {
+    if (alignmentJob?.message) setSyncMessage(alignmentJob.message);
+  }, [alignmentJob]);
+
+  // --- sync diagnostics panel --------------------------------------------------
+  const diagEnabled = useSyncDiagnosticsEnabled();
+  const [diagOpen, setDiagOpen] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -769,6 +815,19 @@ export function PracticeStage({
               <div className="flex gap-2">
                 <PracticeSettingsDialog settings={settings} onChange={updateSettings} icon="keys" />
                 <PracticeSettingsDialog settings={settings} onChange={updateSettings} icon="settings" />
+                {diagEnabled && hasBacking && (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    aria-label={dtwRunning ? "Aligning… (sync diagnostics)" : "Sync diagnostics"}
+                    title="Sync diagnostics (DTW map, offset, drift)"
+                    aria-pressed={diagOpen}
+                    className={cn((diagOpen || dtwRunning) && engagedKey)}
+                    onClick={() => setDiagOpen((o) => !o)}
+                  >
+                    <Activity className={cn("h-4 w-4", dtwRunning && "animate-pulse")} />
+                  </Button>
+                )}
               </div>
             </div>
           </div>
@@ -854,6 +913,29 @@ export function PracticeStage({
             </>
           )}
         </>
+      )}
+      {diagEnabled && diagOpen && (
+        <SyncDiagnostics
+          songId={songId}
+          map={syncMap}
+          method={syncMap?.diagnostics?.method ?? "offset"}
+          syncSource={syncSource}
+          syncWarning={syncWarning}
+          scoreDurationSec={chart?.durationSec ?? 0}
+          audioDurationSec={audioDurationSec}
+          appliedPointCount={syncMap?.points.length ?? 0}
+          scoreTimeSec={t}
+          audioTimeSec={audioRef.current?.currentTime ?? 0}
+          anchors={anchors}
+          onVerifyTransfer={() => ({
+            error:
+              "Practice mode reads the sync map directly for its game clock — there's no alphaTab hand-off to verify here. The curve and live error above are the real check.",
+          })}
+          onRunDtw={handleDtwAlign}
+          dtwRunning={dtwRunning}
+          message={syncMessage}
+          onClose={() => setDiagOpen(false)}
+        />
       )}
       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
       <audio ref={audioRef} preload="auto" className="hidden" />
